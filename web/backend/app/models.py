@@ -45,7 +45,10 @@ class Run(Base):
     config_json: Mapped[str] = mapped_column(Text)  # full strategy config overrides used, as JSON
     universe_json: Mapped[str] = mapped_column(Text)  # symbol list used, as JSON
     start_date: Mapped[str] = mapped_column(String)
-    end_date: Mapped[str] = mapped_column(String)
+    # Nullable: a paper_trade run's session has no defined end while it's
+    # still active (status="active") -- every other run_type always sets
+    # this at creation.
+    end_date: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Summary metrics as direct columns rather than a joined table -- a
     # small fixed set queried on every run-history list view.
@@ -68,6 +71,9 @@ class Run(Base):
     )
     walkforward_windows: Mapped[list["WalkForwardWindow"]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="WalkForwardWindow.window_index"
+    )
+    live_orders: Mapped[list["LiveOrder"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="LiveOrder.id"
     )
 
 
@@ -114,3 +120,26 @@ class WalkForwardWindow(Base):
     win_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     run: Mapped[Run] = relationship(back_populates="walkforward_windows")
+
+
+class LiveOrder(Base):
+    """A submission-time audit trail for orders alpha_engine.broker.alpaca
+    actually submitted during a paper-trading rebalance -- deliberately NOT
+    a live fill-state tracker (status is whatever Alpaca returned at
+    submission, never updated afterward). Cross-check the Alpaca dashboard
+    (or GET /api/live/positions, which is a live proxy) for current fill
+    state; this table is a record of what was submitted and when.
+    """
+
+    __tablename__ = "live_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
+    date: Mapped[str] = mapped_column(String)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    side: Mapped[str] = mapped_column(String)
+    notional: Mapped[float] = mapped_column(Float)
+    alpaca_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String)
+
+    run: Mapped[Run] = relationship(back_populates="live_orders")

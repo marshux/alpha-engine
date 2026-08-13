@@ -141,3 +141,14 @@ def submit_orders(client: TradingClient, orders: list[Order]) -> list[dict]:
             }
         )
     return submitted
+
+
+def flatten_all(client: TradingClient) -> None:
+    """Liquidates every position and cancels every open order immediately --
+    a manual safety action (e.g. the dashboard's "flatten to cash" button),
+    not something the deterministic rebalance logic calls itself. Uses
+    alpaca-py's own bulk close endpoint rather than compute_orders/
+    submit_orders, since this is an unconditional "get to zero now", not a
+    diff against a target allocation.
+    """
+    client.close_all_positions(cancel_orders=True)

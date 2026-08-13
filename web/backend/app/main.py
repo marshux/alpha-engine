@@ -18,6 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.database import init_db
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 from app.routes import auth as auth_routes
+from app.routes import live as live_routes
 from app.routes import public as public_routes
 from app.routes import runs as runs_routes
 
@@ -50,6 +51,7 @@ app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, same_site="
 app.include_router(auth_routes.router)
 app.include_router(runs_routes.router)
 app.include_router(public_routes.router)
+app.include_router(live_routes.router)
 
 
 @app.get("/health")

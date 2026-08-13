@@ -12,12 +12,20 @@ explicit timezone is set.
 """
 from __future__ import annotations
 
+import os
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.jobs.tasks import nightly_cache_refresh, weekly_auto_backtest
+from app.jobs.tasks import nightly_cache_refresh, weekly_auto_backtest, weekly_paper_rebalance
 
 scheduler = BackgroundScheduler()
+
+# Separate from ENABLE_SCHEDULER (which gates whether the scheduler runs at
+# all): real account interaction, even paper, deserves its own explicit
+# opt-in rather than turning on automatically the moment the general
+# scheduler is enabled. Default false.
+ENABLE_LIVE_TRADING = os.environ.get("ENABLE_LIVE_TRADING", "false").lower() == "true"
 
 
 def start_scheduler() -> None:
@@ -35,6 +43,15 @@ def start_scheduler() -> None:
         id="weekly_auto_backtest",
         replace_existing=True,
     )
+    if ENABLE_LIVE_TRADING:
+        # Monday ~market open. Server-local/UTC, same approximation as the
+        # other jobs' trigger times -- no DST adjustment.
+        scheduler.add_job(
+            weekly_paper_rebalance,
+            CronTrigger(day_of_week="mon", hour=14, minute=30),
+            id="weekly_paper_rebalance",
+            replace_existing=True,
+        )
     scheduler.start()
 
 

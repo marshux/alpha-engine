@@ -4,6 +4,7 @@
 // and the session cookie just works via `credentials: "include"`.
 import type {
   AuthMe,
+  LiveAccount,
   PublicRunDetail,
   PublicRunSummary,
   RunCreateRequest,
@@ -48,6 +49,11 @@ export const api = {
   listPublicRuns: () => request<PublicRunSummary[]>("/api/public/runs"),
   getPublicRun: (id: number) => request<PublicRunDetail>(`/api/public/runs/${id}`),
   publicMeta: () => request<{ delay_days: number }>("/api/public/meta"),
+
+  getLivePositions: () => request<LiveAccount>("/api/live/positions"),
+  startPaperTrading: () => request<RunSummary>("/api/live/start", { method: "POST" }),
+  rebalanceNow: () => request<RunSummary>("/api/live/rebalance-now", { method: "POST" }),
+  flattenToCash: () => request<{ status: string }>("/api/live/flatten", { method: "POST" }),
 };
 
 export { ApiError };

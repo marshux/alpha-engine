@@ -31,7 +31,7 @@ COPY web/backend/ ./web/backend/
 # config/universe.yaml then gets looked up under
 # /usr/local/lib/python3.11/config/ instead of /app/config/. -e keeps
 # __file__ pointing at /app/src/alpha_engine/..., matching local dev.
-RUN pip install --no-cache-dir -e ".[web]"
+RUN pip install --no-cache-dir -e ".[web,live]"
 
 # Built frontend lands at web/backend/static -- see STATIC_DIR in
 # web/backend/app/main.py, which serves it (with SPA-route fallback to

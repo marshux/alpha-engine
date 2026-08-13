@@ -21,6 +21,9 @@ export function Layout() {
             <Link to="/" className="text-slate-300 hover:text-white">
               Runs
             </Link>
+            <Link to="/live" className="text-slate-300 hover:text-white">
+              Live
+            </Link>
             <Link
               to="/runs/new"
               className="rounded-md bg-emerald-600 px-3 py-1.5 font-medium text-white hover:bg-emerald-500"

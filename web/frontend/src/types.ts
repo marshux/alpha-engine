@@ -1,8 +1,8 @@
 // Mirrors web/backend/app/schemas.py -- keep in sync by hand (no codegen
 // yet; the backend is small enough that this hasn't been worth automating).
 
-export type RunType = "backtest" | "walkforward";
-export type RunStatus = "pending" | "running" | "completed" | "failed";
+export type RunType = "backtest" | "walkforward" | "paper_trade";
+export type RunStatus = "pending" | "running" | "completed" | "failed" | "active";
 
 export interface RunSummary {
   id: number;
@@ -11,7 +11,7 @@ export interface RunSummary {
   created_at: string;
   completed_at: string | null;
   start_date: string;
-  end_date: string;
+  end_date: string | null; // null for an active (still-running) paper_trade session
   cagr: number | null;
   sharpe: number | null;
   max_drawdown: number | null;
@@ -47,6 +47,15 @@ export interface WalkForwardWindow {
   win_rate: number | null;
 }
 
+export interface LiveOrder {
+  date: string;
+  symbol: string;
+  side: string;
+  notional: number;
+  alpaca_order_id: string | null;
+  status: string;
+}
+
 export interface RunDetail extends RunSummary {
   error_message: string | null;
   config_json: string;
@@ -59,6 +68,23 @@ export interface RunDetail extends RunSummary {
   equity_points: EquityPoint[];
   benchmark_points: BenchmarkPoint[];
   walkforward_windows: WalkForwardWindow[];
+  live_orders: LiveOrder[];
+}
+
+// Live proxy straight from Alpaca (GET /api/live/positions) -- never
+// persisted or cached backend-side, so this is never stale.
+export interface LivePosition {
+  symbol: string;
+  qty: number;
+  avg_entry_price: number;
+  market_value: number;
+}
+
+export interface LiveAccount {
+  equity: number;
+  cash: number;
+  buying_power: number;
+  positions: LivePosition[];
 }
 
 export interface RunCreateRequest {

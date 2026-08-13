@@ -6,9 +6,9 @@ from app.models import BenchmarkPoint, EquityPoint, Run
 from app.routes.public import PUBLIC_DASHBOARD_DELAY_DAYS
 
 
-def _make_run(db_session, *, is_public: bool, status: str = "completed") -> Run:
+def _make_run(db_session, *, is_public: bool, status: str = "completed", run_type: str = "backtest") -> Run:
     run = Run(
-        run_type="backtest",
+        run_type=run_type,
         status=status,
         is_public=is_public,
         config_json='{"signal_weights": {"momentum": 0.9}}',
@@ -93,3 +93,20 @@ def test_patch_run_visibility_toggles_flag(authed_client, db_session):
     # And it's now visible on the public list.
     public_response = authed_client.get("/api/public/runs")
     assert len(public_response.json()) == 1
+
+
+def test_public_list_excludes_paper_trade_runs_even_if_public_and_completed(client, db_session):
+    # Defense in depth: even a hypothetically mis-set paper_trade row
+    # (is_public=True, status="completed" -- status alone wouldn't
+    # normally exclude it if that combination ever existed) must never
+    # appear on the public dashboard. Positions/order timing must never
+    # leak, regardless of how the flags got set.
+    _make_run(db_session, is_public=True, status="completed", run_type="paper_trade")
+    response = client.get("/api/public/runs")
+    assert response.json() == []
+
+
+def test_public_detail_404s_for_paper_trade_run_even_if_public_and_completed(client, db_session):
+    run = _make_run(db_session, is_public=True, status="completed", run_type="paper_trade")
+    response = client.get(f"/api/public/runs/{run.id}")
+    assert response.status_code == 404

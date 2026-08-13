@@ -105,3 +105,11 @@ def test_submit_orders_uses_notional_market_orders():
     assert captured[0].symbol == "AAPL"
     assert captured[0].notional == 123.45
     assert captured[0].qty is None
+
+
+def test_flatten_all_calls_close_all_positions_with_cancel_orders():
+    client = MagicMock()
+
+    broker.flatten_all(client)
+
+    client.close_all_positions.assert_called_once_with(cancel_orders=True)

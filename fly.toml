@@ -9,6 +9,14 @@ primary_region = "iad"
 
 [env]
   ENABLE_SCHEDULER = "true"
+  # Deliberately off at deploy time -- unlike ENABLE_SCHEDULER (the general
+  # cron on/off switch), real account interaction (even paper) gets its own
+  # explicit opt-in. The dashboard's manual "Rebalance now"/"Flatten to
+  # cash" buttons work regardless of this flag; this only gates the
+  # unattended weekly cron job (app/jobs/tasks.py::weekly_paper_rebalance).
+  # Flip to "true" via `flyctl secrets set` (or edit here + redeploy) once
+  # ready for unattended weekly runs.
+  ENABLE_LIVE_TRADING = "false"
   # DATABASE_PATH intentionally unset -- app/database.py's default
   # (<repo_root>/data/web.db) already resolves under the mounted volume
   # below, same as alpha_engine's price/fundamentals cache and the

@@ -5,6 +5,7 @@ backtest.
 """
 from __future__ import annotations
 
+from app.jobs import scheduler as scheduler_module
 from app.jobs import tasks
 from app.jobs.scheduler import scheduler, start_scheduler, stop_scheduler
 
@@ -40,6 +41,15 @@ def test_weekly_auto_backtest_creates_run_and_executes(monkeypatch, tmp_path):
     assert payload.fundamentals is True
 
 
+def test_weekly_paper_rebalance_calls_execute_paper_rebalance(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tasks, "execute_paper_rebalance", lambda: calls.append("executed"))
+
+    tasks.weekly_paper_rebalance()
+
+    assert calls == ["executed"]
+
+
 def _sqlite_session_factory(tmp_path):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -51,10 +61,21 @@ def _sqlite_session_factory(tmp_path):
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
-def test_scheduler_registers_both_jobs():
+def test_scheduler_registers_core_jobs_without_live_trading(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "ENABLE_LIVE_TRADING", False)
     start_scheduler()
     try:
         job_ids = {job.id for job in scheduler.get_jobs()}
         assert job_ids == {"nightly_cache_refresh", "weekly_auto_backtest"}
+    finally:
+        stop_scheduler()
+
+
+def test_scheduler_registers_paper_rebalance_when_live_trading_enabled(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "ENABLE_LIVE_TRADING", True)
+    start_scheduler()
+    try:
+        job_ids = {job.id for job in scheduler.get_jobs()}
+        assert job_ids == {"nightly_cache_refresh", "weekly_auto_backtest", "weekly_paper_rebalance"}
     finally:
         stop_scheduler()

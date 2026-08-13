@@ -11,6 +11,7 @@ from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.data.fundamentals import get_universe_fundamentals
 
 from app.database import SessionLocal
+from app.live_runner import execute_paper_rebalance
 from app.models import Run
 from app.runner import execute_run
 from app.schemas import RunCreateRequest
@@ -64,3 +65,15 @@ def weekly_auto_backtest() -> None:
         db.close()
 
     execute_run(run_id, payload)
+
+
+def weekly_paper_rebalance() -> None:
+    """Runs one real (paper) rebalance against Alpaca via
+    alpha_engine.live.runner, sharing state with the CLI and the manual
+    POST /api/live/rebalance-now endpoint. Registered by
+    jobs/scheduler.py only when ENABLE_LIVE_TRADING is set -- unlike
+    nightly_cache_refresh/weekly_auto_backtest (gated only by
+    ENABLE_SCHEDULER), real account interaction gets its own explicit
+    opt-in even in paper mode.
+    """
+    execute_paper_rebalance()

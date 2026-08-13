@@ -19,6 +19,16 @@ class BenchmarkPointOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class LiveOrderOut(BaseModel):
+    date: str
+    symbol: str
+    side: str
+    notional: float
+    alpaca_order_id: str | None
+    status: str
+    model_config = ConfigDict(from_attributes=True)
+
+
 class WalkForwardWindowOut(BaseModel):
     window_index: int
     train_start: str
@@ -44,7 +54,7 @@ class RunSummary(BaseModel):
     created_at: datetime
     completed_at: datetime | None
     start_date: str
-    end_date: str
+    end_date: str | None  # null for an active (still-running) paper_trade session
     cagr: float | None
     sharpe: float | None
     max_drawdown: float | None
@@ -69,6 +79,7 @@ class RunDetail(RunSummary):
     equity_points: list[EquityPointOut]
     benchmark_points: list[BenchmarkPointOut]
     walkforward_windows: list[WalkForwardWindowOut]
+    live_orders: list[LiveOrderOut]
 
 
 class RunCreateRequest(BaseModel):
@@ -125,3 +136,33 @@ class PublicRunDetail(PublicRunSummary):
 
     equity_points: list[EquityPointOut]
     benchmark_points: list[BenchmarkPointOut]
+
+
+class LivePositionOut(BaseModel):
+    symbol: str
+    qty: float
+    avg_entry_price: float
+    market_value: float
+
+
+class LiveAccountOut(BaseModel):
+    """GET /api/live/positions's response -- a live proxy straight from
+    Alpaca (broker/alpaca.py's get_account/get_positions), never persisted
+    or cached here, so it's never stale between rebalances.
+    """
+
+    equity: float
+    cash: float
+    buying_power: float
+    positions: list[LivePositionOut]
+
+
+class LiveRebalanceOut(BaseModel):
+    """Response for POST /api/live/rebalance-now -- mirrors
+    alpha_engine.live.runner.LiveRebalanceResult.
+    """
+
+    skipped_reason: str | None
+    account_equity: float | None
+    target_weights: dict[str, float]
+    orders: list[dict]

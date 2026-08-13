@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router-dom";
 import { AuthProvider, RequireAuth } from "./auth";
 import { Layout } from "./components/Layout";
 import { PublicLayout } from "./components/PublicLayout";
+import { LiveTrading } from "./pages/LiveTrading";
 import { Login } from "./pages/Login";
 import { NewRun } from "./pages/NewRun";
 import { PublicRunDetail } from "./pages/PublicRunDetail";
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="/" element={<RunHistory />} />
           <Route path="/runs/new" element={<NewRun />} />
           <Route path="/runs/:id" element={<RunDetail />} />
+          <Route path="/live" element={<LiveTrading />} />
         </Route>
       </Routes>
     </AuthProvider>
