@@ -6,7 +6,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from app.models import AiUsageEvent
+import pandas as pd
+import pytest
+
+from app.models import AiUsageEvent, EquityPoint
 from app.routes import live as live_routes
 
 
@@ -148,6 +151,50 @@ def test_ai_usage_empty_returns_zeros(authed_client):
         "total_estimated_cost_usd": 0.0,
         "events": [],
     }
+
+
+def test_benchmark_pnl_requires_auth(client):
+    response = client.get("/api/live/benchmark-pnl")
+    assert response.status_code == 401
+
+
+def test_benchmark_pnl_with_no_equity_points_returns_nulls(authed_client):
+    response = authed_client.get("/api/live/benchmark-pnl")
+
+    assert response.status_code == 200
+    assert response.json() == {"baseline_date": None, "baseline_equity": None, "benchmarks": []}
+
+
+def test_benchmark_pnl_computed_from_same_baseline_as_strategy_pnl(authed_client, db_session, monkeypatch):
+    run = live_routes.get_or_create_paper_trade_run(db_session)
+    db_session.add(EquityPoint(run_id=run.id, date="2026-08-01", equity=100_000.0))
+    db_session.commit()
+
+    def fake_prices(symbols, start, end):
+        assert start == "2026-08-01"
+        # SPY up 10%, VOO up 5% -- distinct per symbol so the test can tell
+        # them apart in the response.
+        closes = {"SPY": [400.0, 440.0], "VOO": [500.0, 525.0], "VTI": [300.0, 300.0]}
+        return {
+            symbol: pd.DataFrame({"close": closes[symbol]}, index=pd.to_datetime(["2026-08-01", "2026-08-13"]))
+            for symbol in symbols
+        }
+
+    monkeypatch.setattr(live_routes, "get_universe_prices", fake_prices)
+    monkeypatch.setattr(live_routes, "load_universe", lambda: {"benchmarks": ["SPY", "VOO", "VTI"]})
+
+    response = authed_client.get("/api/live/benchmark-pnl")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["baseline_date"] == "2026-08-01"
+    assert body["baseline_equity"] == 100_000.0
+    by_symbol = {b["symbol"]: b for b in body["benchmarks"]}
+    assert by_symbol["SPY"]["pnl_pct"] == pytest.approx(0.10)
+    assert by_symbol["SPY"]["pnl_usd"] == pytest.approx(10_000.0)
+    assert by_symbol["VOO"]["pnl_pct"] == pytest.approx(0.05)
+    assert by_symbol["VOO"]["pnl_usd"] == pytest.approx(5_000.0)
+    assert by_symbol["VTI"]["pnl_pct"] == pytest.approx(0.0)
 
 
 def test_flatten_requires_auth(client):

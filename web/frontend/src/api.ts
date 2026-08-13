@@ -5,6 +5,7 @@
 import type {
   AiUsageSummary,
   AuthMe,
+  BenchmarkPnl,
   LiveAccount,
   PublicRunDetail,
   PublicRunSummary,
@@ -53,6 +54,7 @@ export const api = {
 
   getLivePositions: () => request<LiveAccount>("/api/live/positions"),
   getAiUsage: () => request<AiUsageSummary>("/api/live/ai-usage"),
+  getBenchmarkPnl: () => request<BenchmarkPnl>("/api/live/benchmark-pnl"),
   startPaperTrading: () => request<RunSummary>("/api/live/start", { method: "POST" }),
   rebalanceNow: () => request<RunSummary>("/api/live/rebalance-now", { method: "POST" }),
   checkAnomaliesNow: () => request<RunSummary>("/api/live/anomaly-check-now", { method: "POST" }),

@@ -51,6 +51,20 @@ class AiUsageSummaryOut(BaseModel):
     events: list[AiUsageEventOut]
 
 
+class BenchmarkPnlEntry(BaseModel):
+    symbol: str
+    pnl_usd: float
+    pnl_pct: float
+
+
+class BenchmarkPnlOut(BaseModel):
+    # None when the paper-trade session has no equity points yet (no
+    # rebalance has happened) -- nothing to compare against.
+    baseline_date: str | None
+    baseline_equity: float | None
+    benchmarks: list[BenchmarkPnlEntry]
+
+
 class WalkForwardWindowOut(BaseModel):
     window_index: int
     train_start: str

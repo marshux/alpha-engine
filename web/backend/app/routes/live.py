@@ -5,17 +5,28 @@ persisted), starting a session, triggering a manual rebalance, and the
 """
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from alpha_engine.broker import alpaca as broker
+from alpha_engine.config import load_universe
+from alpha_engine.data.equities import get_universe_prices
 
 from app.ai_cost import estimate_cost_usd
 from app.auth import require_auth
 from app.database import get_db
 from app.live_runner import execute_anomaly_check, execute_paper_rebalance, get_or_create_paper_trade_run
-from app.models import AiUsageEvent, Run
-from app.schemas import AiUsageEventOut, AiUsageSummaryOut, LiveAccountOut, RunSummary
+from app.models import AiUsageEvent, EquityPoint, Run
+from app.schemas import (
+    AiUsageEventOut,
+    AiUsageSummaryOut,
+    BenchmarkPnlEntry,
+    BenchmarkPnlOut,
+    LiveAccountOut,
+    RunSummary,
+)
 
 router = APIRouter(prefix="/api/live", tags=["live"], dependencies=[Depends(require_auth)])
 
@@ -103,6 +114,39 @@ def get_ai_usage(db: Session = Depends(get_db)) -> AiUsageSummaryOut:
         total_estimated_cost_usd=sum(e.estimated_cost_usd for e in events),
         events=events,
     )
+
+
+@router.get("/benchmark-pnl", response_model=BenchmarkPnlOut)
+def get_benchmark_pnl(db: Session = Depends(get_db)) -> BenchmarkPnlOut:
+    """"What if this same starting capital had been put into SPY/VOO/VTI
+    instead?" -- computed from the SAME baseline (the session's first
+    EquityPoint) the dashboard's strategy P/L headline already uses, so
+    the two numbers are a fair apples-to-apples comparison rather than
+    two different reference points. Not persisted -- cheap enough (a
+    handful of cached daily closes) to compute fresh on every request.
+    """
+    run = get_or_create_paper_trade_run(db)
+    baseline = db.query(EquityPoint).filter_by(run_id=run.id).order_by(EquityPoint.date).first()
+    if baseline is None:
+        return BenchmarkPnlOut(baseline_date=None, baseline_equity=None, benchmarks=[])
+
+    universe = load_universe()
+    benchmark_symbols = universe.get("benchmarks") or ["SPY", "VOO", "VTI"]
+    prices = get_universe_prices(benchmark_symbols, baseline.date, date.today().isoformat())
+
+    benchmarks = []
+    for symbol in benchmark_symbols:
+        df = prices.get(symbol)
+        if df is None or df.empty:
+            continue
+        price_start = float(df["close"].iloc[0])
+        price_now = float(df["close"].iloc[-1])
+        pnl_pct = price_now / price_start - 1
+        benchmarks.append(
+            BenchmarkPnlEntry(symbol=symbol, pnl_usd=baseline.equity * pnl_pct, pnl_pct=pnl_pct)
+        )
+
+    return BenchmarkPnlOut(baseline_date=baseline.date, baseline_equity=baseline.equity, benchmarks=benchmarks)
 
 
 @router.post("/flatten")

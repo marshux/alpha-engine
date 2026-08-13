@@ -12,7 +12,7 @@ import { api, ApiError } from "../api";
 import { buildEquityChartData } from "../chartData";
 import { Pagination, usePagination } from "../components/Pagination";
 import { currency, num, pct } from "../format";
-import type { AiUsageSummary, LiveAccount, RunDetail } from "../types";
+import type { AiUsageSummary, BenchmarkPnl, LiveAccount, RunDetail } from "../types";
 
 const POSITIONS_POLL_MS = 10_000;
 const STRATEGY_COLOR = "#34d399";
@@ -31,6 +31,7 @@ export function LiveTrading() {
   const [session, setSession] = useState<RunDetail | null>(null);
   const [account, setAccount] = useState<LiveAccount | null>(null);
   const [aiUsage, setAiUsage] = useState<AiUsageSummary | null>(null);
+  const [benchmarkPnl, setBenchmarkPnl] = useState<BenchmarkPnl | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,10 +59,21 @@ export function LiveTrading() {
       .catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
   };
 
+  const loadBenchmarkPnl = () => {
+    // Same cadence rationale as loadAiUsage -- the underlying equity
+    // baseline only moves on a rebalance, and benchmark closes are daily,
+    // not worth refetching on the 10s positions poll.
+    api
+      .getBenchmarkPnl()
+      .then(setBenchmarkPnl)
+      .catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
+  };
+
   useEffect(() => {
     loadSession().catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
     loadPositions();
     loadAiUsage();
+    loadBenchmarkPnl();
     timerRef.current = setInterval(loadPositions, POSITIONS_POLL_MS);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -81,6 +93,7 @@ export function LiveTrading() {
         loadPositions();
         loadSession();
         loadAiUsage();
+        loadBenchmarkPnl();
       }, 3000);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -193,6 +206,24 @@ export function LiveTrading() {
               {pct(Math.abs(pnlPercent ?? 0))})
             </span>
             <span className="text-sm text-slate-500">vs. {currency(startingEquity)} starting equity</span>
+          </div>
+        )}
+        {benchmarkPnl && benchmarkPnl.benchmarks.length > 0 && (
+          <div className="mt-4 flex flex-wrap gap-4 border-t border-slate-800 pt-3">
+            <span className="text-xs text-slate-500">If invested in an index fund instead:</span>
+            {benchmarkPnl.benchmarks.map((b) => {
+              const positive = b.pnl_usd >= 0;
+              return (
+                <span key={b.symbol} className="text-sm">
+                  <span className="text-slate-400">{b.symbol}: </span>
+                  <span className={positive ? "text-emerald-400" : "text-red-400"}>
+                    {positive ? "+" : "-"}
+                    {currency(Math.abs(b.pnl_usd))} ({positive ? "+" : "-"}
+                    {pct(Math.abs(b.pnl_pct))})
+                  </span>
+                </span>
+              );
+            })}
           </div>
         )}
       </div>

@@ -108,6 +108,18 @@ export interface AiUsageSummary {
   events: AiUsageEvent[];
 }
 
+export interface BenchmarkPnlEntry {
+  symbol: string;
+  pnl_usd: number;
+  pnl_pct: number;
+}
+
+export interface BenchmarkPnl {
+  baseline_date: string | null;
+  baseline_equity: number | null;
+  benchmarks: BenchmarkPnlEntry[];
+}
+
 export interface RunCreateRequest {
   run_type: RunType;
   start_date: string;
