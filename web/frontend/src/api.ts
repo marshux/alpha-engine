@@ -3,6 +3,7 @@
 // app's built static files itself) -- so no CORS setup is needed anywhere,
 // and the session cookie just works via `credentials: "include"`.
 import type {
+  AiUsageSummary,
   AuthMe,
   LiveAccount,
   PublicRunDetail,
@@ -51,8 +52,10 @@ export const api = {
   publicMeta: () => request<{ delay_days: number }>("/api/public/meta"),
 
   getLivePositions: () => request<LiveAccount>("/api/live/positions"),
+  getAiUsage: () => request<AiUsageSummary>("/api/live/ai-usage"),
   startPaperTrading: () => request<RunSummary>("/api/live/start", { method: "POST" }),
   rebalanceNow: () => request<RunSummary>("/api/live/rebalance-now", { method: "POST" }),
+  checkAnomaliesNow: () => request<RunSummary>("/api/live/anomaly-check-now", { method: "POST" }),
   flattenToCash: () => request<{ status: string }>("/api/live/flatten", { method: "POST" }),
 };
 

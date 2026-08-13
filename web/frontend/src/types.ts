@@ -54,6 +54,7 @@ export interface LiveOrder {
   notional: number;
   alpaca_order_id: string | null;
   status: string;
+  trigger: string;
 }
 
 export interface RunDetail extends RunSummary {
@@ -85,6 +86,26 @@ export interface LiveAccount {
   cash: number;
   buying_power: number;
   positions: LivePosition[];
+}
+
+export interface AiUsageEvent {
+  date: string;
+  source: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  web_search_requests: number;
+  estimated_cost_usd: number;
+}
+
+export interface AiUsageSummary {
+  total_calls: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_web_search_requests: number;
+  total_estimated_cost_usd: number;
+  events: AiUsageEvent[];
 }
 
 export interface RunCreateRequest {
