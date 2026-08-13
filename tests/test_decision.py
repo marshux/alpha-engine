@@ -97,6 +97,54 @@ def test_size_positions_volatility_scaled_requires_full_coverage():
         portfolio.size_positions(selected, vol, "volatility_scaled", max_position_weight=1.0)
 
 
+def test_min_variance_weights_favor_lower_variance_uncorrelated_asset():
+    rng = pd.Series(range(100)).astype(float)
+    returns = pd.DataFrame(
+        {
+            "LOW_VOL": (rng % 2 - 0.5).to_numpy() * 0.001,  # tiny, alternating
+            "HIGH_VOL": (rng % 5 - 2).to_numpy() * 0.05,  # much larger swings
+        }
+    )
+
+    weights = portfolio._min_variance_weights(returns)
+
+    assert weights.sum() == pytest.approx(1.0)
+    assert (weights >= 0).all()
+    assert weights["LOW_VOL"] > weights["HIGH_VOL"]
+
+
+def test_min_variance_weights_falls_back_to_equal_weight_on_degenerate_covariance():
+    returns = pd.DataFrame({"A": [0.0] * 10, "B": [0.0] * 10})
+    weights = portfolio._min_variance_weights(returns)
+    assert weights["A"] == pytest.approx(0.5)
+    assert weights["B"] == pytest.approx(0.5)
+
+
+def test_size_positions_min_variance_requires_dataframe():
+    selected = pd.Series({"A": 1.0, "B": 1.0})
+    vol_series = pd.Series({"A": 0.1, "B": 0.2})  # wrong type for min_variance
+    with pytest.raises(ValueError):
+        portfolio.size_positions(selected, vol_series, "min_variance", max_position_weight=1.0)
+
+
+def test_size_positions_min_variance_requires_full_coverage():
+    selected = pd.Series({"A": 1.0, "B": 1.0})
+    returns = pd.DataFrame({"A": [0.01, -0.02, 0.03]})  # missing B
+    with pytest.raises(ValueError):
+        portfolio.size_positions(selected, returns, "min_variance", max_position_weight=1.0)
+
+
+def test_size_positions_min_variance_matches_direct_computation():
+    selected = pd.Series({"A": 1.0, "B": 1.0})
+    returns = pd.DataFrame({"A": [0.01, -0.02, 0.03, 0.0, 0.02], "B": [0.05, -0.10, 0.08, -0.03, 0.06]})
+
+    result = portfolio.size_positions(selected, returns, "min_variance", max_position_weight=1.0)
+    expected = portfolio._min_variance_weights(returns)
+
+    assert result["A"] == pytest.approx(expected["A"])
+    assert result["B"] == pytest.approx(expected["B"])
+
+
 def test_apply_sector_cap_scales_down_overweight_sector():
     weights = pd.Series({"A": 0.3, "B": 0.3, "C": 0.4})
     sector_map = {"A": "tech", "B": "tech", "C": "energy"}

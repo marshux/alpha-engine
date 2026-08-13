@@ -4,6 +4,7 @@ same target weights.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -11,9 +12,41 @@ def select_top_n(scores: pd.Series, top_n: int) -> pd.Series:
     return scores.sort_values(ascending=False).head(top_n)
 
 
+def _min_variance_weights(returns: pd.DataFrame) -> pd.Series:
+    """Closed-form global minimum-variance weights:
+    w = inv(Sigma) @ 1 / (1^T @ inv(Sigma) @ 1).
+
+    Uses the pseudo-inverse rather than a strict inverse for numerical
+    safety when the sample covariance matrix is near-singular (common with
+    few observations relative to the number of symbols). Long-only is
+    approximated by clipping negative weights to zero and renormalizing,
+    rather than solving a full constrained QP -- keeps this dependency-free
+    (no scipy needed) at the cost of not being the *exact* long-only
+    optimum. Falls back to equal-weight if every raw weight comes out
+    non-positive (degenerate covariance).
+    """
+    symbols = list(returns.columns)
+    equal_weight_fallback = pd.Series(1.0 / len(symbols), index=symbols)
+
+    cov = returns.cov().values
+    ones = np.ones(len(symbols))
+    inv_cov = np.linalg.pinv(cov)
+    raw = inv_cov @ ones
+    raw_sum = raw.sum()
+    if not np.isfinite(raw_sum) or raw_sum == 0:
+        return equal_weight_fallback
+    raw = raw / raw_sum
+
+    weights = pd.Series(raw, index=symbols).clip(lower=0.0)
+    total = weights.sum()
+    if not np.isfinite(total) or total <= 0:
+        return equal_weight_fallback
+    return weights / total
+
+
 def size_positions(
     selected: pd.Series,
-    volatility: pd.Series | None,
+    volatility: pd.Series | pd.DataFrame | None,
     sizing: str,
     max_position_weight: float,
 ) -> pd.Series:
@@ -21,11 +54,18 @@ def size_positions(
 
     - equal_weight: 1/N each
     - volatility_scaled: inverse-volatility weighted (lower-vol names get
-      more capital) -- `volatility` must have a positive value for every
-      selected symbol
-    Both are capped at `max_position_weight`. Since raw weights already sum
-    to 1.0 before capping, capping can only reduce the total -- any capital
-    freed up by the cap is deliberately left as cash rather than
+      more capital) -- `volatility` must be a `pd.Series` with a positive
+      value for every selected symbol
+    - min_variance: closed-form global minimum-variance portfolio (see
+      `_min_variance_weights`) -- `volatility` must instead be a
+      `pd.DataFrame` of trailing daily returns (symbols as columns), with
+      no missing values for any selected symbol. The same parameter name
+      carries a different shape depending on `sizing` rather than adding a
+      second parameter, so the call site (backtest/engine.py) stays simple;
+      see `signals/volatility.trailing_returns_matrix` for how it's built.
+    All three are capped at `max_position_weight`. Since raw weights already
+    sum to 1.0 before capping, capping can only reduce the total -- any
+    capital freed up by the cap is deliberately left as cash rather than
     redistributed to other positions, which keeps sizing simple and fully
     deterministic at the cost of sometimes being under-invested.
     """
@@ -36,7 +76,7 @@ def size_positions(
     if sizing == "equal_weight":
         raw = pd.Series(1.0 / n, index=selected.index)
     elif sizing == "volatility_scaled":
-        if volatility is None:
+        if volatility is None or not isinstance(volatility, pd.Series):
             raise ValueError("volatility series required for volatility_scaled sizing")
         vol = volatility.reindex(selected.index)
         if vol.isna().any() or (vol <= 0).any():
@@ -45,6 +85,15 @@ def size_positions(
             )
         inv_vol = 1.0 / vol
         raw = inv_vol / inv_vol.sum()
+    elif sizing == "min_variance":
+        if volatility is None or not isinstance(volatility, pd.DataFrame):
+            raise ValueError("returns DataFrame required for min_variance sizing")
+        returns = volatility.reindex(columns=selected.index)
+        if returns.isna().any().any():
+            raise ValueError(
+                "min_variance sizing requires return history for every selected symbol"
+            )
+        raw = _min_variance_weights(returns)
     else:
         raise ValueError(f"unknown sizing method: {sizing}")
 
@@ -58,9 +107,10 @@ def apply_sector_cap(
     proportionally within that sector.
 
     Symbols absent from `sector_map` are left as-is at the sector level --
-    v1's large-cap universe has no GICS sector classification wired in yet
-    (a known data gap, not a design choice); single-position caps still
-    apply to them via `size_positions`.
+    single-position caps still apply to them via `size_positions`. In
+    normal use every symbol in config/universe.yaml has an entry in
+    config/sectors.yaml (enforced by tests/test_config.py); this only
+    matters for ad-hoc symbols passed via `--symbols`.
     """
     if not sector_map:
         return weights
@@ -77,7 +127,7 @@ def apply_sector_cap(
 
 def build_portfolio(
     scores: pd.Series,
-    volatility: pd.Series | None,
+    volatility: pd.Series | pd.DataFrame | None,
     sector_map: dict[str, str],
     config: dict,
 ) -> pd.Series:

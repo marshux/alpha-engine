@@ -5,10 +5,15 @@
 rebalance: weekly  # weekly | biweekly | monthly
 
 signal_weights:
-  momentum: 0.4
-  mean_reversion: 0.25
-  volatility: 0.15   # lower realized vol scores higher (risk-adjusted tilt)
-  news_ai: 0.2        # only applied in live/paper trading -- the backtester
+  momentum: 0.3
+  mean_reversion: 0.2
+  volatility: 0.1     # lower realized vol scores higher (risk-adjusted tilt)
+  value: 0.15         # cheapness via trailing P/B -- only applied when
+                      # --fundamentals is passed (see cli.py); coverage is
+                      # thin for older backtest dates, see signals/value.py
+  quality: 0.15       # ROE + low leverage composite -- same fundamentals
+                      # coverage caveat as value, see signals/quality.py
+  news_ai: 0.1        # only applied in live/paper trading -- the backtester
                       # never supplies a news_ai column (web search can't be
                       # date-scoped to the past, see signals/news_ai.py), so
                       # this weight has no effect on historical backtests

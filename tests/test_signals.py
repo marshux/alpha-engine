@@ -84,3 +84,30 @@ def test_zscore_output_is_cross_sectionally_centered():
     scores = momentum.compute(prices, as_of=up.index[-1])
 
     assert abs(scores.mean()) < 1e-9
+
+
+def test_trailing_returns_matrix_shape_and_window():
+    n = 40
+    rng = np.random.default_rng(3)
+    a = _series_df(100 + np.cumsum(rng.normal(0, 1, n)), n)
+    b = _series_df(50 + np.cumsum(rng.normal(0, 1, n)), n)
+    prices = {"A": a, "B": b}
+
+    returns = volatility.trailing_returns_matrix(prices, ["A", "B"], as_of=a.index[-1], window=20)
+
+    assert list(returns.columns) == ["A", "B"]
+    assert len(returns) == 20
+    assert not returns.isna().any().any()
+
+
+def test_trailing_returns_matrix_drops_symbols_with_insufficient_history():
+    n = 40
+    rng = np.random.default_rng(4)
+    a = _series_df(100 + np.cumsum(rng.normal(0, 1, n)), n)
+    short = _series_df(np.full(5, 100.0), 5)  # far fewer days than window
+    prices = {"A": a, "SHORT": short}
+
+    returns = volatility.trailing_returns_matrix(prices, ["A", "SHORT"], as_of=a.index[-1], window=20)
+
+    assert "A" in returns.columns
+    assert "SHORT" not in returns.columns

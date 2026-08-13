@@ -1,0 +1,74 @@
+# Hand-curated GICS sector for every symbol in universe.yaml (large_caps +
+# sector_etfs). Hand-curated rather than fetched for the same reason
+# universe.yaml is: deterministic, no flaky data dependency, no silent
+# drift. Uses the same sector-name vocabulary as the sector ETFs so an
+# individual stock and its sector ETF, if both held, count toward the same
+# decision/portfolio.py sector cap.
+#
+# tests/test_config.py asserts every large_cap/sector_etf symbol has an
+# entry here -- add one whenever a new ticker is added to universe.yaml.
+
+# Sector ETFs -- each one's "sector" is the sector it represents.
+XLK: Technology
+XLF: Financials
+XLE: Energy
+XLV: Health Care
+XLI: Industrials
+XLY: Consumer Discretionary
+XLP: Consumer Staples
+XLU: Utilities
+XLB: Materials
+XLRE: Real Estate
+XLC: Communication Services
+
+# Large-cap individual stocks.
+AAPL: Technology
+MSFT: Technology
+NVDA: Technology
+GOOGL: Communication Services
+AMZN: Consumer Discretionary
+META: Communication Services
+AVGO: Technology
+TSLA: Consumer Discretionary
+BRK-B: Financials
+LLY: Health Care
+JPM: Financials
+V: Financials
+UNH: Health Care
+XOM: Energy
+MA: Financials
+COST: Consumer Staples
+HD: Consumer Discretionary
+PG: Consumer Staples
+NFLX: Communication Services
+JNJ: Health Care
+BAC: Financials
+CRM: Technology
+ABBV: Health Care
+ORCL: Technology
+CVX: Energy
+KO: Consumer Staples
+MRK: Health Care
+AMD: Technology
+PEP: Consumer Staples
+ADBE: Technology
+WMT: Consumer Staples
+TMO: Health Care
+LIN: Materials
+MCD: Consumer Discretionary
+ABT: Health Care
+CSCO: Technology
+ACN: Technology
+DHR: Health Care
+INTU: Technology
+IBM: Technology
+GE: Industrials
+TXN: Technology
+PM: Consumer Staples
+QCOM: Technology
+CAT: Industrials
+VZ: Communication Services
+AMGN: Health Care
+NOW: Technology
+ISRG: Health Care
+SPGI: Financials

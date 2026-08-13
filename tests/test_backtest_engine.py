@@ -159,6 +159,45 @@ def test_circuit_breaker_reenters_after_cooldown():
     assert any(w.empty for w in result.weights_history.values())  # was flattened at some point
 
 
+def test_start_end_restrict_dates_without_starving_signal_lookback():
+    n = 400
+    up = _series_df(100 * (1.002 ** np.arange(n)), n)  # strong uptrend
+    flat = _series_df(np.full(n, 100.0), n)
+    prices = {"A": up, "B": flat}
+    config = _base_strategy_config(
+        portfolio={
+            "top_n": 1,
+            "max_position_weight": 1.0,
+            "max_sector_weight": 1.0,
+            "sizing": "equal_weight",
+        }
+    )
+    all_dates = pd.DatetimeIndex(sorted(set(up.index) | set(flat.index)))
+    start = all_dates[300]  # well past momentum's 273-day lookback requirement
+
+    result = run_backtest(prices, config["signal_weights"], config, start=start)
+
+    assert result.equity_curve.index.min() >= start
+    first_date = sorted(result.weights_history.keys())[0]
+    # if `prices` had been sliced to `start` instead of kept full, momentum
+    # would have no lookback history yet and this would tie/neutral instead
+    # of clearly picking the uptrend symbol
+    assert list(result.weights_history[first_date].index) == ["A"]
+
+
+def test_start_end_produces_fewer_dates_than_unrestricted():
+    n = 300
+    prices = {"A": _series_df(np.full(n, 100.0), n)}
+    config = _base_strategy_config()
+    all_dates = pd.DatetimeIndex(prices["A"].index)
+    midpoint = all_dates[len(all_dates) // 2]
+
+    full_result = run_backtest(prices, config["signal_weights"], config)
+    restricted_result = run_backtest(prices, config["signal_weights"], config, start=midpoint)
+
+    assert len(restricted_result.equity_curve) < len(full_result.equity_curve)
+
+
 def test_metrics_cagr_and_drawdown_on_known_curve():
     dates = pd.bdate_range("2020-01-01", periods=3)
     curve = pd.Series([100.0, 150.0, 90.0], index=dates)

@@ -35,6 +35,51 @@ def max_drawdown(equity_curve: pd.Series) -> float:
     return float(drawdown.min())
 
 
+def downside_deviation(equity_curve: pd.Series, periods_per_year: float) -> float:
+    """Annualized standard deviation of negative-return periods only."""
+    returns = equity_curve.pct_change().dropna()
+    negative = returns[returns < 0]
+    if negative.empty:
+        return 0.0
+    return float(negative.std() * np.sqrt(periods_per_year))
+
+
+def sortino_ratio(
+    equity_curve: pd.Series, periods_per_year: float, risk_free_rate: float = 0.0
+) -> float:
+    """Like `sharpe_ratio`, but only penalizes downside volatility -- a
+    strategy with large positive swings and no negative ones scores higher
+    here than under Sharpe, which penalizes both directions equally.
+    """
+    returns = equity_curve.pct_change().dropna()
+    if returns.empty:
+        return 0.0
+    downside = downside_deviation(equity_curve, periods_per_year)
+    if downside == 0:
+        return 0.0
+    excess_annualized = returns.mean() * periods_per_year - risk_free_rate
+    return float(excess_annualized / downside)
+
+
+def calmar_ratio(equity_curve: pd.Series) -> float:
+    """CAGR divided by the magnitude of the worst drawdown -- return per
+    unit of the single worst loss endured, rather than per unit of
+    volatility (Sharpe/Sortino).
+    """
+    dd = max_drawdown(equity_curve)
+    if dd == 0:
+        return 0.0
+    return float(cagr(equity_curve) / abs(dd))
+
+
+def win_rate(equity_curve: pd.Series) -> float:
+    """Fraction of rebalance periods with a positive return."""
+    returns = equity_curve.pct_change().dropna()
+    if returns.empty:
+        return 0.0
+    return float((returns > 0).mean())
+
+
 def benchmark_equity_curve(
     benchmark_prices: pd.DataFrame, dates: pd.DatetimeIndex, initial_capital: float
 ) -> pd.Series:
@@ -51,7 +96,11 @@ def summarize(
     summary = {
         "cagr": cagr(equity_curve),
         "sharpe": sharpe_ratio(equity_curve, periods_per_year),
+        "sortino": sortino_ratio(equity_curve, periods_per_year),
         "max_drawdown": max_drawdown(equity_curve),
+        "calmar": calmar_ratio(equity_curve),
+        "downside_deviation": downside_deviation(equity_curve, periods_per_year),
+        "win_rate": win_rate(equity_curve),
         "final_equity": float(equity_curve.iloc[-1]) if len(equity_curve) else 0.0,
     }
     if benchmark_curve is not None and len(benchmark_curve) > 1:

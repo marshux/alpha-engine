@@ -37,3 +37,31 @@ def raw_annualized_vol(
 def compute(prices: dict[str, pd.DataFrame], as_of: pd.Timestamp) -> pd.Series:
     vol = raw_annualized_vol(prices, as_of)
     return zscore(-vol)
+
+
+def trailing_returns_matrix(
+    prices: dict[str, pd.DataFrame], symbols: list[str], as_of: pd.Timestamp, window: int = WINDOW_DAYS
+) -> pd.DataFrame:
+    """Daily returns for each symbol over the trailing `window`, as of
+    `as_of` -- symbols as columns, dates as rows. Feeds the min-variance
+    portfolio sizing in decision/portfolio.py (its covariance matrix is
+    just this DataFrame's `.cov()`). Symbols with insufficient history are
+    dropped entirely rather than left with NaNs, since a covariance matrix
+    with missing entries isn't invertible.
+    """
+    series = {}
+    for symbol in symbols:
+        df = prices.get(symbol)
+        if df is None:
+            continue
+        hist = df.loc[:as_of]
+        if len(hist) < window + 1:
+            continue
+        returns = hist["close"].iloc[-window - 1 :].pct_change().dropna()
+        series[symbol] = returns
+    if not series:
+        return pd.DataFrame()
+    # Align by date (not position) -- a symbol missing a trading day that
+    # others have would otherwise silently misalign the covariance calc.
+    # Drop any symbol with a gap rather than trying to patch it.
+    return pd.concat(series, axis=1).dropna(axis=1, how="any")

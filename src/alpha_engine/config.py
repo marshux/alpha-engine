@@ -1,4 +1,4 @@
-"""Loaders for the YAML config files under config/ (universe, strategy)."""
+"""Loaders for the YAML config files under config/ (universe, strategy, sectors)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,6 +15,11 @@ def load_universe(path: Path = CONFIG_DIR / "universe.yaml") -> dict:
 
 
 def load_strategy(path: Path = CONFIG_DIR / "strategy.yaml") -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def load_sector_map(path: Path = CONFIG_DIR / "sectors.yaml") -> dict[str, str]:
     with open(path) as f:
         return yaml.safe_load(f)
 

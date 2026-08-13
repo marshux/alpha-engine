@@ -23,7 +23,7 @@ from alpha_engine.backtest.costs import turnover_cost
 from alpha_engine.decision.portfolio import build_portfolio
 from alpha_engine.decision.risk import stopped_out_positions
 from alpha_engine.decision.scorer import combine_scores
-from alpha_engine.signals import mean_reversion, momentum, volatility
+from alpha_engine.signals import mean_reversion, momentum, quality, value, volatility
 
 SIGNAL_MODULES = {
     "momentum": momentum,
@@ -42,6 +42,7 @@ DEFAULT_CIRCUIT_BREAKER_COOLDOWN_PERIODS = 8
 class BacktestResult:
     equity_curve: pd.Series
     weights_history: dict[pd.Timestamp, pd.Series] = field(default_factory=dict)
+    turnover_history: dict[pd.Timestamp, float] = field(default_factory=dict)
 
 
 def rebalance_dates(all_dates: pd.DatetimeIndex, cadence: str) -> pd.DatetimeIndex:
@@ -74,14 +75,39 @@ def run_backtest(
     signal_weights: dict[str, float],
     strategy_config: dict,
     news_signal: pd.DataFrame | None = None,
+    sector_map: dict[str, str] | None = None,
+    fundamentals: dict[str, pd.DataFrame] | None = None,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
 ) -> BacktestResult:
     """`news_signal`, if provided: DataFrame indexed by rebalance date with
     one column per symbol, holding precomputed/cached AI news scores
     (already z-scored) -- kept separate from `prices` since it comes from a
     different data source (signals/news_ai.py) fetched independently.
+
+    `sector_map`, if provided: symbol -> sector name (config/sectors.yaml),
+    used for the portfolio's sector-exposure cap.
+
+    `fundamentals`, if provided: symbol -> quarterly fundamentals DataFrame
+    (data.fundamentals.get_universe_fundamentals) -- when given, adds the
+    `value`/`quality` signals to the signal table for this run. Symbols
+    without fundamentals data (e.g. ETFs) simply score neutral on these,
+    via the same missing-signal handling as everywhere else.
+
+    `start`/`end`, if provided: restrict rebalancing to this sub-range of
+    dates. Deliberately does NOT slice `prices` -- signals still see full
+    lookback history from before `start` (momentum needs ~273 trading days
+    of it). This is what backtest/walkforward.py uses to evaluate a single
+    train/test window without starving signals of history at the window's
+    start; slicing `prices` per-window would do exactly that.
     """
+    sector_map = sector_map or {}
     all_dates = pd.DatetimeIndex(sorted(set().union(*(df.index for df in prices.values()))))
     dates = rebalance_dates(all_dates, strategy_config["rebalance"])
+    if start is not None:
+        dates = dates[dates >= start]
+    if end is not None:
+        dates = dates[dates <= end]
 
     portfolio_cfg = strategy_config["portfolio"]
     risk_cfg = strategy_config["risk"]
@@ -93,6 +119,7 @@ def run_backtest(
 
     equity_points: dict[pd.Timestamp, float] = {}
     weights_history: dict[pd.Timestamp, pd.Series] = {}
+    turnover_history: dict[pd.Timestamp, float] = {}
 
     prev_prices: dict[str, float] = {}
     has_prev = False
@@ -134,6 +161,7 @@ def run_backtest(
             weights = pd.Series(dtype=float)
             entry_prices = {}
             weights_history[as_of] = weights
+            turnover_history[as_of] = 0.0
             if cooldown_remaining == 0:
                 breaker_peak = equity  # drawdown clock restarts from here
             prev_prices, has_prev = current_prices, True
@@ -148,6 +176,7 @@ def run_backtest(
             weights = pd.Series(dtype=float)
             entry_prices = {}
             weights_history[as_of] = weights
+            turnover_history[as_of] = turnover
             cooldown_remaining = cooldown_periods
             prev_prices, has_prev = current_prices, True
             continue
@@ -159,20 +188,26 @@ def run_backtest(
         )
         if news_signal is not None and as_of in news_signal.index:
             signal_table["news_ai"] = news_signal.loc[as_of]
+        if fundamentals is not None:
+            signal_table["value"] = value.compute(prices, fundamentals, as_of)
+            signal_table["quality"] = quality.compute(fundamentals, as_of)
 
         scores = combine_scores(signal_table, signal_weights)
         if stopped:
             scores = scores.drop(index=[s for s in stopped if s in scores.index])
 
-        vol_scores = None
+        sizing_data = None
         if portfolio_cfg["sizing"] == "volatility_scaled":
-            vol_scores = volatility.raw_annualized_vol(prices, as_of)
+            sizing_data = volatility.raw_annualized_vol(prices, as_of)
+        elif portfolio_cfg["sizing"] == "min_variance":
+            sizing_data = volatility.trailing_returns_matrix(prices, list(prices.keys()), as_of)
 
-        target_weights = build_portfolio(scores, vol_scores, sector_map={}, config=portfolio_cfg)
+        target_weights = build_portfolio(scores, sizing_data, sector_map=sector_map, config=portfolio_cfg)
 
         turnover = weights.add(-target_weights, fill_value=0.0).abs().sum()
         equity -= turnover_cost(turnover, equity, cost_cfg)
         equity_points[as_of] = equity
+        turnover_history[as_of] = turnover
 
         for s in target_weights.index:
             if weights.get(s, 0.0) == 0.0:
@@ -188,4 +223,5 @@ def run_backtest(
     return BacktestResult(
         equity_curve=pd.Series(equity_points).sort_index(),
         weights_history=weights_history,
+        turnover_history=turnover_history,
     )
