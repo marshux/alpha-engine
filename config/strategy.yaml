@@ -25,13 +25,17 @@ signal_weights:
                       # signals/ai_theme.py.
 
 portfolio:
-  top_n: 15                  # number of positions held at any time
+  top_n: 10                  # number of positions held at any time -- walk-forward
+                              # (2008-2024, 14 windows) picked 10 over 15 in 8/14 windows
   max_position_weight: 0.12  # single-position cap
   max_sector_weight: 0.30    # sector exposure cap (sector ETFs count as their own sector)
   max_theme_weight: 0.35     # hedge: caps total portfolio weight in AI-tagged
                               # names regardless of how strongly they rank
                               # (see decision/portfolio.apply_theme_cap)
-  sizing: volatility_scaled  # volatility_scaled | equal_weight | min_variance
+  sizing: equal_weight       # volatility_scaled | equal_weight | min_variance -- walk-forward
+                              # picked equal_weight in 8/14 windows vs. 2/14 for
+                              # volatility_scaled (the prior default); the fancier
+                              # vol-aware sizing didn't reliably earn its complexity
 
 risk:
   stop_loss_pct: 0.15        # per-position stop, evaluated at each rebalance
@@ -51,6 +55,13 @@ regime:
                          # not stock-picking (see decision/risk.py). Needs
                          # benchmark_prices passed to run_backtest to take
                          # effect at all (cli.py does this automatically).
+                         # Walk-forward (2008-2024) only picked this in 3/14
+                         # windows by train-Sharpe -- but train-Sharpe doesn't
+                         # price in tail risk, and the one catastrophic OOS
+                         # window (2022, momentum-heavy, regime off, CAGR
+                         # -23.7%) is exactly the failure mode this exists to
+                         # catch. Kept on deliberately despite "losing" the
+                         # per-window vote.
   ma_window_days: 200   # Faber's classic timing-model window
 
 costs:
