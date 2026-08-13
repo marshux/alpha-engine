@@ -8,3 +8,9 @@ output/*.csv
 output/*.png
 .env
 .pytest_cache/
+
+# web dashboard
+data/web.db
+data/web_tearsheets/
+web/frontend/node_modules/
+web/frontend/dist/

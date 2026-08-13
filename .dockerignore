@@ -1,0 +1,14 @@
+.venv/
+venv/
+.git/
+data/
+output/
+web/frontend/node_modules/
+web/frontend/dist/
+web/backend/static/
+web/backend/.env
+web/backend/tests/
+tests/
+*.pyc
+__pycache__/
+.pytest_cache/

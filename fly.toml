@@ -1,0 +1,32 @@
+# Deploy from the repo root: flyctl deploy
+# (build.dockerfile is relative to this file's directory, i.e. repo root)
+
+app = "alpha-engine-dash"
+primary_region = "iad"
+
+[build]
+  dockerfile = "web/backend/Dockerfile"
+
+[env]
+  ENABLE_SCHEDULER = "true"
+  # DATABASE_PATH intentionally unset -- app/database.py's default
+  # (<repo_root>/data/web.db) already resolves under the mounted volume
+  # below, same as alpha_engine's price/fundamentals cache and the
+  # generated tear sheets (see src/alpha_engine/data/cache.py, which
+  # isn't independently configurable, so the volume has to land exactly
+  # where the code already expects "data/" to be: /app/data).
+
+[[mounts]]
+  source = "alpha_engine_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
