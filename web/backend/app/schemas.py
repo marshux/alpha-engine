@@ -26,7 +26,29 @@ class LiveOrderOut(BaseModel):
     notional: float
     alpaca_order_id: str | None
     status: str
+    trigger: str
     model_config = ConfigDict(from_attributes=True)
+
+
+class AiUsageEventOut(BaseModel):
+    date: str
+    source: str
+    input_tokens: int
+    output_tokens: int
+    cache_creation_input_tokens: int
+    cache_read_input_tokens: int
+    web_search_requests: int
+    estimated_cost_usd: float
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AiUsageSummaryOut(BaseModel):
+    total_calls: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_web_search_requests: int
+    total_estimated_cost_usd: float
+    events: list[AiUsageEventOut]
 
 
 class WalkForwardWindowOut(BaseModel):

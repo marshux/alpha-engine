@@ -11,7 +11,7 @@ from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.data.fundamentals import get_universe_fundamentals
 
 from app.database import SessionLocal
-from app.live_runner import execute_paper_rebalance
+from app.live_runner import execute_anomaly_check, execute_paper_rebalance
 from app.models import Run
 from app.runner import execute_run
 from app.schemas import RunCreateRequest
@@ -77,3 +77,14 @@ def weekly_paper_rebalance() -> None:
     opt-in even in paper mode.
     """
     execute_paper_rebalance()
+
+
+def daily_anomaly_check() -> None:
+    """Checks currently-held paper-trade positions for an abnormal
+    single-day drop (alpha_engine.live.anomaly_guard) and force-closes any
+    flagged position -- entirely independent of weekly_paper_rebalance's
+    cadence, a faster-acting safety net for a stock that crashes mid-week.
+    Registered by jobs/scheduler.py only when ENABLE_LIVE_TRADING is set,
+    same gate as weekly_paper_rebalance (real account interaction).
+    """
+    execute_anomaly_check()

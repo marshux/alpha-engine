@@ -141,5 +141,31 @@ class LiveOrder(Base):
     notional: Mapped[float] = mapped_column(Float)
     alpaca_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String)
+    # "rebalance" (the weekly cycle) or "anomaly" (live/anomaly_guard.py's
+    # daily per-position outlier check, forced closure outside the
+    # rebalance cadence entirely) -- lets the dashboard tell the two apart.
+    trigger: Mapped[str] = mapped_column(String, default="rebalance", server_default="rebalance")
 
     run: Mapped[Run] = relationship(back_populates="live_orders")
+
+
+class AiUsageEvent(Base):
+    """One row per real (non-cache-hit) call to signals/news_ai.py's
+    Anthropic API -- raw token/search counts only, not a pre-computed
+    dollar figure (see app/ai_cost.py for why). Exists because this
+    specific signal has a real cost history worth watching (an earlier
+    per-ticker design cost ~$27/rebalance before being redesigned -- see
+    CLAUDE.md), and there was previously no visibility into it beyond
+    checking the Anthropic console by hand.
+    """
+
+    __tablename__ = "ai_usage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    date: Mapped[str] = mapped_column(String, index=True)
+    source: Mapped[str] = mapped_column(String)  # e.g. "news_ai_sentiment"
+    input_tokens: Mapped[int] = mapped_column(Integer)
+    output_tokens: Mapped[int] = mapped_column(Integer)
+    cache_creation_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_read_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    web_search_requests: Mapped[int] = mapped_column(Integer, default=0)

@@ -143,6 +143,22 @@ def submit_orders(client: TradingClient, orders: list[Order]) -> list[dict]:
     return submitted
 
 
+def close_position(client: TradingClient, symbol: str) -> dict:
+    """Immediately liquidates a single position via a market order. Used by
+    live/anomaly_guard.py to force-close one flagged position without
+    touching anything else -- unlike compute_orders/submit_orders, there's
+    no target allocation to diff against here, just "get this one symbol
+    to zero now".
+    """
+    result = client.close_position(symbol)
+    return {
+        "symbol": symbol,
+        "side": OrderSide.SELL.value,
+        "alpaca_order_id": str(result.id),
+        "status": str(result.status),
+    }
+
+
 def flatten_all(client: TradingClient) -> None:
     """Liquidates every position and cancels every open order immediately --
     a manual safety action (e.g. the dashboard's "flatten to cash" button),

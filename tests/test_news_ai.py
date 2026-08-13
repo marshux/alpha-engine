@@ -22,19 +22,38 @@ class _FakeTextBlock:
 
 
 @dataclass
+class _FakeServerToolUsage:
+    web_search_requests: int
+
+
+@dataclass
+class _FakeUsage:
+    input_tokens: int
+    output_tokens: int
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    server_tool_use: _FakeServerToolUsage | None = None
+
+
+@dataclass
 class _FakeResponse:
     stop_reason: str
     content: list
+    usage: _FakeUsage
 
 
-def _fake_client(result: dict, stop_reason: str = "end_turn") -> MagicMock:
+def _fake_client(result: dict, stop_reason: str = "end_turn", usage: _FakeUsage | None = None) -> MagicMock:
+    usage = usage or _FakeUsage(
+        input_tokens=100, output_tokens=50, server_tool_use=_FakeServerToolUsage(web_search_requests=1)
+    )
     client = MagicMock()
     if stop_reason == "refusal":
-        response = _FakeResponse(stop_reason="refusal", content=[])
+        response = _FakeResponse(stop_reason="refusal", content=[], usage=usage)
     else:
         response = _FakeResponse(
             stop_reason="end_turn",
             content=[_FakeTextBlock(type="text", text=json.dumps(result))],
+            usage=usage,
         )
     client.messages.create.return_value = response
     client.beta.messages.create.return_value = response
@@ -47,11 +66,19 @@ def test_research_calls_api_and_caches_by_date(tmp_path, monkeypatch):
     client = _fake_client(result)
 
     first = news_ai._research_ai_sector_sentiment(client, "2026-01-05", None)
-    assert first == result
+    assert {k: v for k, v in first.items() if k != "usage"} == result
+    assert first["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "web_search_requests": 1,
+    }
     assert client.messages.create.call_count == 1
 
     second = news_ai._research_ai_sector_sentiment(client, "2026-01-05", None)
-    assert second == result
+    assert {k: v for k, v in second.items() if k != "usage"} == result
+    assert second["usage"] is None  # cache hit -- no new cost incurred
     assert client.messages.create.call_count == 1  # cache hit, no second call
 
 
@@ -63,6 +90,7 @@ def test_research_handles_refusal(tmp_path, monkeypatch):
 
     assert result["sentiment"] == 0.0
     assert result["confidence"] == 0.0
+    assert result["usage"]["input_tokens"] == 100  # a refusal still costs tokens
 
 
 def test_research_omits_x_mcp_without_token(tmp_path, monkeypatch):

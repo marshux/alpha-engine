@@ -71,6 +71,12 @@ class LiveRebalanceResult:
     orders: list[dict] = field(default_factory=list)
     account_equity: float | None = None
     dry_run: bool = False
+    # Raw token/search counts from news_ai's Anthropic call this rebalance,
+    # or None if no fresh call was made (flattened by a risk check, or a
+    # same-day cache hit -- see signals/news_ai.py). Left as raw counts,
+    # not a pre-computed dollar figure, so a future pricing change doesn't
+    # require re-deriving anything already persisted (see app/ai_cost.py).
+    ai_usage: dict | None = None
 
 
 def _current_prices(prices: dict[str, pd.DataFrame], as_of: pd.Timestamp) -> dict[str, float]:
@@ -140,6 +146,7 @@ def run_live_rebalance(
     breaker_peak = state.breaker_peak if state.breaker_peak is not None else equity
 
     target_weights = pd.Series(dtype=float)
+    ai_usage: dict | None = None
 
     if state.cooldown_remaining > 0:
         state.cooldown_remaining -= 1
@@ -187,6 +194,7 @@ def run_live_rebalance(
             effective_portfolio_cfg = portfolio_cfg
             if theme_weights and "max_theme_weight" in portfolio_cfg:
                 sentiment = news_ai.compute_ai_sector_sentiment(as_of)
+                ai_usage = sentiment.get("usage")
                 adjusted_cap = modulate_theme_cap(
                     portfolio_cfg["max_theme_weight"], sentiment["sentiment"], sentiment["confidence"]
                 )
@@ -219,4 +227,5 @@ def run_live_rebalance(
         orders=submitted,
         account_equity=equity,
         dry_run=dry_run,
+        ai_usage=ai_usage,
     )

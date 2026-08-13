@@ -90,7 +90,12 @@ def _research_ai_sector_sentiment(
 ) -> dict:
     cache_path = _cache_path(date_str)
     if cache_path.exists():
-        return json.loads(cache_path.read_text())
+        # `usage` is deliberately not cached alongside the sentiment result
+        # and is always None on a cache hit -- it reflects the cost of the
+        # specific API call that produced this entry, and a cache hit costs
+        # nothing new. Callers (live/runner.py) use this to decide whether
+        # to record a cost event at all.
+        return {**json.loads(cache_path.read_text()), "usage": None}
 
     tools: list[dict] = [{"type": "web_search_20260209", "name": "web_search"}]
     request_kwargs: dict = {}
@@ -146,9 +151,24 @@ def _research_ai_sector_sentiment(
         text = next(b.text for b in response.content if b.type == "text")
         result = json.loads(text)
 
+    # Usage is populated on every response regardless of stop_reason -- a
+    # refusal still costs tokens. server_tool_use is only present when at
+    # least one server tool (web_search) was actually invoked.
+    usage = {
+        "input_tokens": response.usage.input_tokens,
+        "output_tokens": response.usage.output_tokens,
+        "cache_creation_input_tokens": response.usage.cache_creation_input_tokens or 0,
+        "cache_read_input_tokens": response.usage.cache_read_input_tokens or 0,
+        "web_search_requests": (
+            response.usage.server_tool_use.web_search_requests if response.usage.server_tool_use else 0
+        ),
+    }
+
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    # Cache only the sentiment fields -- usage belongs to the call that
+    # produced this entry, not something to replay on future cache hits.
     cache_path.write_text(json.dumps(result))
-    return result
+    return {**result, "usage": usage}
 
 
 def compute_ai_sector_sentiment(

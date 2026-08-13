@@ -50,6 +50,15 @@ def test_weekly_paper_rebalance_calls_execute_paper_rebalance(monkeypatch):
     assert calls == ["executed"]
 
 
+def test_daily_anomaly_check_calls_execute_anomaly_check(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tasks, "execute_anomaly_check", lambda: calls.append("executed"))
+
+    tasks.daily_anomaly_check()
+
+    assert calls == ["executed"]
+
+
 def _sqlite_session_factory(tmp_path):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -76,6 +85,11 @@ def test_scheduler_registers_paper_rebalance_when_live_trading_enabled(monkeypat
     start_scheduler()
     try:
         job_ids = {job.id for job in scheduler.get_jobs()}
-        assert job_ids == {"nightly_cache_refresh", "weekly_auto_backtest", "weekly_paper_rebalance"}
+        assert job_ids == {
+            "nightly_cache_refresh",
+            "weekly_auto_backtest",
+            "weekly_paper_rebalance",
+            "daily_anomaly_check",
+        }
     finally:
         stop_scheduler()

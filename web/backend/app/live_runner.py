@@ -9,11 +9,12 @@ from __future__ import annotations
 import traceback
 from datetime import date
 
+from alpha_engine.live.anomaly_guard import run_anomaly_check
 from alpha_engine.live.runner import run_live_rebalance
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import EquityPoint, LiveOrder, Run
+from app.models import AiUsageEvent, EquityPoint, LiveOrder, Run
 
 PAPER_TRADE_RUN_TYPE = "paper_trade"
 
@@ -84,6 +85,62 @@ def execute_paper_rebalance(session_factory=SessionLocal) -> None:
                     notional=order["notional"],
                     alpaca_order_id=order.get("alpaca_order_id"),
                     status=order["status"],
+                    trigger="rebalance",
+                )
+            )
+        if result.ai_usage is not None:
+            db.add(
+                AiUsageEvent(
+                    date=today_str,
+                    source="news_ai_sentiment",
+                    input_tokens=result.ai_usage["input_tokens"],
+                    output_tokens=result.ai_usage["output_tokens"],
+                    cache_creation_input_tokens=result.ai_usage["cache_creation_input_tokens"],
+                    cache_read_input_tokens=result.ai_usage["cache_read_input_tokens"],
+                    web_search_requests=result.ai_usage["web_search_requests"],
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
+def execute_anomaly_check(session_factory=SessionLocal) -> None:
+    """Runs the daily per-position anomaly check (live/anomaly_guard.py),
+    entirely independent of the weekly rebalance, and persists any forced
+    sells to the paper-trade session's Run row tagged trigger="anomaly" so
+    the dashboard can tell them apart from routine rebalance orders. Same
+    non-failing error-handling posture as execute_paper_rebalance -- a
+    failed check today shouldn't flip the session to failed, just try
+    again on the next scheduled check.
+    """
+    db = session_factory()
+    try:
+        run = get_or_create_paper_trade_run(db)
+
+        try:
+            result = run_anomaly_check()
+        except Exception:
+            run.error_message = traceback.format_exc()
+            db.commit()
+            return
+
+        if not result.orders:
+            return
+
+        run.error_message = None
+        today_str = date.today().isoformat()
+        for order in result.orders:
+            db.add(
+                LiveOrder(
+                    run_id=run.id,
+                    date=today_str,
+                    symbol=order["symbol"],
+                    side=order["side"],
+                    notional=order["notional"],
+                    alpaca_order_id=order.get("alpaca_order_id"),
+                    status=order["status"],
+                    trigger="anomaly",
                 )
             )
         db.commit()

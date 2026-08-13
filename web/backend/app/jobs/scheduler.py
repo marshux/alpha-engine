@@ -17,7 +17,7 @@ import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.jobs.tasks import nightly_cache_refresh, weekly_auto_backtest, weekly_paper_rebalance
+from app.jobs.tasks import daily_anomaly_check, nightly_cache_refresh, weekly_auto_backtest, weekly_paper_rebalance
 
 scheduler = BackgroundScheduler()
 
@@ -50,6 +50,18 @@ def start_scheduler() -> None:
             weekly_paper_rebalance,
             CronTrigger(day_of_week="mon", hour=14, minute=30),
             id="weekly_paper_rebalance",
+            replace_existing=True,
+        )
+        # Weekdays, shortly after nightly_cache_refresh (02:00) so that
+        # day's full closing prices are already cached -- well after any
+        # market close given nightly_cache_refresh itself runs long after
+        # 21:00 UTC (4pm ET). Runs before weekly_paper_rebalance's Monday
+        # 14:30 slot, so a Monday-morning anomaly sell is reflected before
+        # that day's rebalance builds its position diff.
+        scheduler.add_job(
+            daily_anomaly_check,
+            CronTrigger(day_of_week="mon-fri", hour=2, minute=30),
+            id="daily_anomaly_check",
             replace_existing=True,
         )
     scheduler.start()

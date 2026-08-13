@@ -42,10 +42,18 @@ def test_rebalance_dates_weekly_snaps_to_trading_days():
     assert dates.is_monotonic_increasing
 
 
+def test_rebalance_dates_daily_matches_every_trading_day():
+    all_dates = pd.bdate_range("2020-01-01", periods=60)
+    dates = rebalance_dates(all_dates, "daily")
+    assert dates.isin(all_dates).all()
+    assert dates.is_monotonic_increasing
+    assert len(dates) == len(all_dates)
+
+
 def test_rebalance_dates_rejects_unknown_cadence():
     all_dates = pd.bdate_range("2020-01-01", periods=10)
     with pytest.raises(ValueError):
-        rebalance_dates(all_dates, "daily")
+        rebalance_dates(all_dates, "hourly")
 
 
 def test_backtest_grows_equity_when_all_assets_trend_up():

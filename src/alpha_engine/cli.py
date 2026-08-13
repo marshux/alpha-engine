@@ -223,6 +223,24 @@ def cmd_live_rebalance(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_anomaly_check(args: argparse.Namespace) -> int:
+    # Imported here for the same reason as cmd_live_rebalance -- keeps the
+    # optional `live` extra (alpaca-py) out of a backtest-only install.
+    from alpha_engine.live.anomaly_guard import run_anomaly_check
+
+    result = run_anomaly_check(dry_run=args.dry_run)
+
+    if not result.orders:
+        print("No anomalous drops detected -- no positions closed.")
+        return 0
+
+    label = "Would close" if result.dry_run else "Closed"
+    print(f"{label} {len(result.orders)} position(s):")
+    for order in result.orders:
+        print(f"  {order['symbol']:<8} ${order['notional']:>10,.2f}  [{order['status']}]")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="alpha-engine")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -268,6 +286,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Compute target weights and orders but do not submit them",
     )
     live.set_defaults(func=cmd_live_rebalance)
+
+    anomaly = sub.add_parser(
+        "anomaly-check",
+        help="Check currently-held positions for an abnormal single-day drop and force-close any flagged (requires the `live` extra)",
+    )
+    anomaly.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be closed but do not submit orders",
+    )
+    anomaly.set_defaults(func=cmd_anomaly_check)
 
     args = parser.parse_args(argv)
     return args.func(args)

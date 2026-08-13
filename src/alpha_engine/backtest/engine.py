@@ -31,9 +31,9 @@ SIGNAL_MODULES = {
     "volatility": volatility,
 }
 
-_CADENCE_FREQ = {"weekly": "W-FRI", "biweekly": "2W-FRI", "monthly": "ME"}
+_CADENCE_FREQ = {"daily": "B", "weekly": "W-FRI", "biweekly": "2W-FRI", "monthly": "ME"}
 
-PERIODS_PER_YEAR = {"weekly": 52, "biweekly": 26, "monthly": 12}
+PERIODS_PER_YEAR = {"daily": 252, "weekly": 52, "biweekly": 26, "monthly": 12}
 
 DEFAULT_CIRCUIT_BREAKER_COOLDOWN_PERIODS = 8
 

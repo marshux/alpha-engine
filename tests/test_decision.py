@@ -212,6 +212,55 @@ def test_regime_is_risk_on_respects_as_of_no_lookahead():
     assert risk.regime_is_risk_on(df, as_of=as_of, ma_window=20) is True
 
 
+def _price_series_with_shock(lookback_returns: list[float], shock_return: float) -> pd.DataFrame:
+    """A price history whose daily returns equal `lookback_returns` in
+    order, followed by one final day with `shock_return` -- lets a test
+    control both the trailing distribution and the outlier move exactly.
+    """
+    closes = [100.0]
+    for r in lookback_returns:
+        closes.append(closes[-1] * (1 + r))
+    closes.append(closes[-1] * (1 + shock_return))
+    return _benchmark_df(closes)
+
+
+def test_anomalous_drop_positions_flags_outlier_drop():
+    lookback = [0.01 if i % 2 == 0 else -0.01 for i in range(60)]  # ~1% typical daily swing
+    df = _price_series_with_shock(lookback, shock_return=-0.20)  # a huge one-day crash
+    flagged = risk.anomalous_drop_positions({"A": df}, {"A"}, as_of=df.index[-1], z_threshold=3.0, lookback_days=60)
+    assert flagged == {"A"}
+
+
+def test_anomalous_drop_positions_does_not_flag_ordinary_move():
+    lookback = [0.01 if i % 2 == 0 else -0.01 for i in range(60)]
+    df = _price_series_with_shock(lookback, shock_return=-0.005)  # in line with its normal daily swing
+    flagged = risk.anomalous_drop_positions({"A": df}, {"A"}, as_of=df.index[-1], z_threshold=3.0, lookback_days=60)
+    assert flagged == set()
+
+
+def test_anomalous_drop_positions_ignores_upside_spike():
+    lookback = [0.01 if i % 2 == 0 else -0.01 for i in range(60)]
+    df = _price_series_with_shock(lookback, shock_return=0.20)  # a huge one-day POP, not a drop
+    flagged = risk.anomalous_drop_positions({"A": df}, {"A"}, as_of=df.index[-1], z_threshold=3.0, lookback_days=60)
+    assert flagged == set()
+
+
+def test_anomalous_drop_positions_requires_full_lookback_history():
+    lookback = [0.01 if i % 2 == 0 else -0.01 for i in range(10)]  # far short of lookback_days=60
+    df = _price_series_with_shock(lookback, shock_return=-0.20)
+    flagged = risk.anomalous_drop_positions({"A": df}, {"A"}, as_of=df.index[-1], z_threshold=3.0, lookback_days=60)
+    assert flagged == set()
+
+
+def test_anomalous_drop_positions_respects_z_threshold():
+    lookback = [0.01 if i % 2 == 0 else -0.01 for i in range(60)]
+    df = _price_series_with_shock(lookback, shock_return=-0.03)  # a moderate, non-extreme drop
+    loose = risk.anomalous_drop_positions({"A": df}, {"A"}, as_of=df.index[-1], z_threshold=1.0, lookback_days=60)
+    strict = risk.anomalous_drop_positions({"A": df}, {"A"}, as_of=df.index[-1], z_threshold=10.0, lookback_days=60)
+    assert loose == {"A"}
+    assert strict == set()
+
+
 def test_modulate_theme_cap_positive_sentiment_loosens_cap():
     base = 0.35
     loosened = portfolio.modulate_theme_cap(base, sentiment=1.0, confidence=1.0, sensitivity=0.5)

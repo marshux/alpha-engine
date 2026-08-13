@@ -2,7 +2,7 @@
 # (src/alpha_engine/decision/*). Changing weights/thresholds here changes
 # backtest behavior without touching code.
 
-rebalance: weekly  # weekly | biweekly | monthly
+rebalance: weekly  # daily | weekly | biweekly | monthly
 
 signal_weights:
   momentum: 0.3
@@ -50,6 +50,15 @@ risk:
                                          # equity (see backtest/engine.py) --
                                          # otherwise the strategy could never
                                          # recover from a frozen pre-crash peak
+  anomaly_z_threshold: 3.0    # live-only (see live/anomaly_guard.py): a held
+                               # position's daily move must be this many
+                               # standard deviations below its OWN trailing
+                               # daily-return distribution to be force-sold.
+                               # Not used by the backtester -- this is a
+                               # faster-than-weekly safety net, not a
+                               # backtested factor.
+  anomaly_lookback_days: 60   # trading days of history used to establish
+                               # each position's "normal" daily volatility
 
 regime:
   enabled: true         # Faber-style trend filter: hold equities only when

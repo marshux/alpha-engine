@@ -162,6 +162,55 @@ def test_ai_sentiment_modulates_theme_cap(tmp_path, monkeypatch):
     assert modulate_calls == [(0.8, 0.8, 0.9)]  # base_max_theme_weight=0.8 from _base_strategy_config
 
 
+def test_ai_usage_propagates_from_sentiment_call(tmp_path, monkeypatch):
+    _patch_config(monkeypatch)
+    _patch_data_fetches(monkeypatch)
+
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(getattr(runner, name), "compute", lambda *a, **k: pd.Series({"AAPL": 1.0, "MSFT": 0.5}))
+
+    usage = {
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "web_search_requests": 2,
+    }
+    monkeypatch.setattr(
+        runner.news_ai,
+        "compute_ai_sector_sentiment",
+        lambda as_of: {"sentiment": 0.0, "confidence": 0.0, "event_tags": [], "summary": "", "usage": usage},
+    )
+
+    monkeypatch.setattr(runner.broker, "get_account", lambda client: {"equity": 100_000.0, "cash": 100_000.0, "buying_power": 100_000.0})
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    result = runner.run_live_rebalance(dry_run=True, state_path=tmp_path / "live_state.json", broker_client=object())
+
+    assert result.ai_usage == usage
+
+
+def test_ai_usage_is_none_when_sentiment_call_is_a_cache_hit(tmp_path, monkeypatch):
+    _patch_config(monkeypatch)
+    _patch_data_fetches(monkeypatch)
+
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(getattr(runner, name), "compute", lambda *a, **k: pd.Series({"AAPL": 1.0, "MSFT": 0.5}))
+
+    monkeypatch.setattr(
+        runner.news_ai,
+        "compute_ai_sector_sentiment",
+        lambda as_of: {"sentiment": 0.0, "confidence": 0.0, "event_tags": [], "summary": "", "usage": None},
+    )
+
+    monkeypatch.setattr(runner.broker, "get_account", lambda client: {"equity": 100_000.0, "cash": 100_000.0, "buying_power": 100_000.0})
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    result = runner.run_live_rebalance(dry_run=True, state_path=tmp_path / "live_state.json", broker_client=object())
+
+    assert result.ai_usage is None
+
+
 def test_dry_run_never_submits_orders(tmp_path, monkeypatch):
     _patch_config(monkeypatch)
     _patch_data_fetches(monkeypatch)

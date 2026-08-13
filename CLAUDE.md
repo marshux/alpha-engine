@@ -249,6 +249,43 @@ the `live` extra (`pip install -e ".[live]"`) and `ALPACA_API_KEY`/
   unchanged — this is what keeps live trading bound by the same
   deterministic decision layer a backtest already validated.
 
+- **`live/anomaly_guard.py`**: `run_anomaly_check()` -- a daily,
+  rebalance-cadence-independent safety net. Checks only currently-held
+  positions (cheap) for a volatility-adjusted single-day outlier drop
+  (`decision/risk.py::anomalous_drop_positions`: today's return more than
+  `risk.anomaly_z_threshold` standard deviations below that specific
+  stock's own trailing `risk.anomaly_lookback_days`-day daily-return
+  distribution, not a flat percentage) and immediately force-closes any
+  flagged position via `broker/alpaca.py::close_position`. Exists because
+  the checks inside `live/runner.py` (circuit breaker, regime filter,
+  stop-loss) only run once a week -- a single stock can crash mid-week
+  without tripping any of them until the next scheduled rebalance. No
+  shared state with `live/state.py`: it operates purely off Alpaca's
+  current positions, so a closed position simply won't reappear in the
+  next check -- naturally idempotent. CLI: `alpha-engine anomaly-check
+  [--dry-run]`. Web: `POST /api/live/anomaly-check-now` (manual) and the
+  scheduler's `daily_anomaly_check` job (weekdays 02:30 UTC, gated by
+  `ENABLE_LIVE_TRADING` same as the weekly rebalance) -- both persist any
+  forced sells as `LiveOrder` rows tagged `trigger="anomaly"`, so the
+  dashboard's order history can tell them apart from routine rebalance
+  orders (`trigger="rebalance"`).
+
+- **Cost visibility**: `signals/news_ai.py`'s Anthropic call returns real
+  token/search usage (`response.usage`), which `live/runner.py` surfaces
+  on `LiveRebalanceResult.ai_usage` (raw counts, `None` on a same-day
+  cache hit -- a cache hit costs nothing new). The web backend persists
+  each real call as an `AiUsageEvent` row (`web/backend/app/models.py`)
+  and estimates its dollar cost at query time from rate constants in
+  `web/backend/app/ai_cost.py`, not at write time -- so a future pricing
+  change only means updating those constants, not re-deriving history.
+  `GET /api/live/ai-usage` and the `/live` dashboard's "AI sentiment call
+  cost" panel surface the running total. Exists because the earlier
+  per-ticker design of this signal ran up real, unplanned spend (see
+  `signals/news_ai.py`'s docstring) before there was any visibility into
+  it beyond the Anthropic console.
+
 Known v1 scope limits, not oversights: paper trading only (see above);
-weekly cadence only, no intraday execution; order submission is treated
-as the audit record, not reconciled against actual fills.
+weekly rebalance cadence only, no intraday execution (the anomaly guard
+above is daily, not intraday -- it narrows but doesn't close this gap);
+order submission is treated as the audit record, not reconciled against
+actual fills.

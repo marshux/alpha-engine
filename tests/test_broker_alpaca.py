@@ -113,3 +113,18 @@ def test_flatten_all_calls_close_all_positions_with_cancel_orders():
     broker.flatten_all(client)
 
     client.close_all_positions.assert_called_once_with(cancel_orders=True)
+
+
+def test_close_position_submits_and_returns_order_dict():
+    client = MagicMock()
+    client.close_position.return_value = _FakeSubmittedOrder(id="42", status="accepted")
+
+    result = broker.close_position(client, "AAPL")
+
+    client.close_position.assert_called_once_with("AAPL")
+    assert result == {
+        "symbol": "AAPL",
+        "side": OrderSide.SELL.value,
+        "alpaca_order_id": "42",
+        "status": "accepted",
+    }

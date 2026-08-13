@@ -39,6 +39,45 @@ def circuit_breaker_triggered(equity_curve: pd.Series, max_drawdown_pct: float) 
     return bool(drawdown.iloc[-1] <= -max_drawdown_pct)
 
 
+def anomalous_drop_positions(
+    prices: dict[str, pd.DataFrame],
+    symbols: set[str],
+    as_of: pd.Timestamp,
+    z_threshold: float = 3.0,
+    lookback_days: int = 60,
+) -> set[str]:
+    """Symbols whose most recent daily return is an outlier relative to
+    their OWN trailing daily-return distribution -- catches a sudden
+    abnormal single-day move for that specific stock, independent of
+    cumulative loss from entry (stopped_out_positions) or portfolio-level
+    drawdown (circuit_breaker_triggered). Volatility-adjusted rather than a
+    flat percentage so a naturally choppy stock doesn't flag on an
+    ordinary day for it, while a naturally stable one flags on a much
+    smaller absolute move. Only flags downside moves ("going red"),
+    intentionally not symmetric. Meant to be checked daily
+    (live/anomaly_guard.py), independent of rebalance cadence entirely.
+    """
+    flagged = set()
+    for symbol in symbols:
+        df = prices.get(symbol)
+        if df is None:
+            continue
+        hist = df.loc[:as_of]
+        returns = hist["close"].pct_change().dropna()
+        if len(returns) < lookback_days + 1:
+            continue
+        today_return = returns.iloc[-1]
+        # Excludes today's return from its own baseline so one big move
+        # doesn't inflate the std it's being measured against.
+        trailing = returns.iloc[-lookback_days - 1 : -1]
+        std = trailing.std()
+        if not std or std <= 0:
+            continue
+        if today_return / std <= -z_threshold:
+            flagged.add(symbol)
+    return flagged
+
+
 def regime_is_risk_on(benchmark_prices: pd.DataFrame, as_of: pd.Timestamp, ma_window: int) -> bool:
     """Faber-style trend filter: True if the benchmark's close as of
     `as_of` is above its own trailing `ma_window`-day simple moving
