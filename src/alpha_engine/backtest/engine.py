@@ -21,7 +21,7 @@ import pandas as pd
 
 from alpha_engine.backtest.costs import turnover_cost
 from alpha_engine.decision.portfolio import build_portfolio
-from alpha_engine.decision.risk import circuit_breaker_triggered, stopped_out_positions
+from alpha_engine.decision.risk import stopped_out_positions
 from alpha_engine.decision.scorer import combine_scores
 from alpha_engine.signals import mean_reversion, momentum, volatility
 
@@ -34,6 +34,8 @@ SIGNAL_MODULES = {
 _CADENCE_FREQ = {"weekly": "W-FRI", "biweekly": "2W-FRI", "monthly": "ME"}
 
 PERIODS_PER_YEAR = {"weekly": 52, "biweekly": 26, "monthly": 12}
+
+DEFAULT_CIRCUIT_BREAKER_COOLDOWN_PERIODS = 8
 
 
 @dataclass
@@ -95,6 +97,21 @@ def run_backtest(
     prev_prices: dict[str, float] = {}
     has_prev = False
 
+    # Circuit-breaker state: `breaker_peak` is the reference high-water mark
+    # used for the drawdown check, tracked separately from the full equity
+    # curve. This matters once the breaker has fired: while flattened to
+    # cash, equity is frozen, so drawdown-from-the-pre-crash-peak would
+    # never recover on its own and the strategy would be locked out of the
+    # market forever. Instead: stay in cash for a fixed cooldown, then
+    # re-enter and reset `breaker_peak` to the post-cooldown equity level,
+    # so the drawdown clock restarts from where the strategy actually is
+    # rather than an unrecoverable historical high.
+    breaker_peak = equity
+    cooldown_remaining = 0
+    cooldown_periods = risk_cfg.get(
+        "circuit_breaker_cooldown_periods", DEFAULT_CIRCUIT_BREAKER_COOLDOWN_PERIODS
+    )
+
     for as_of in dates:
         current_prices = _prices_at(prices, as_of)
 
@@ -111,15 +128,27 @@ def run_backtest(
             equity *= 1.0 + period_return
 
         equity_points[as_of] = equity
-        curve_so_far = pd.Series(equity_points).sort_index()
 
-        if circuit_breaker_triggered(curve_so_far, risk_cfg["max_drawdown_pct"]):
-            turnover = weights.abs().sum()
-            equity -= turnover_cost(turnover, equity, cost_cfg)
+        if cooldown_remaining > 0:
+            cooldown_remaining -= 1
             weights = pd.Series(dtype=float)
             entry_prices = {}
-            equity_points[as_of] = equity
             weights_history[as_of] = weights
+            if cooldown_remaining == 0:
+                breaker_peak = equity  # drawdown clock restarts from here
+            prev_prices, has_prev = current_prices, True
+            continue
+
+        breaker_peak = max(breaker_peak, equity)
+        drawdown = equity / breaker_peak - 1.0
+        if drawdown <= -risk_cfg["max_drawdown_pct"]:
+            turnover = weights.abs().sum()
+            equity -= turnover_cost(turnover, equity, cost_cfg)
+            equity_points[as_of] = equity
+            weights = pd.Series(dtype=float)
+            entry_prices = {}
+            weights_history[as_of] = weights
+            cooldown_remaining = cooldown_periods
             prev_prices, has_prev = current_prices, True
             continue
 

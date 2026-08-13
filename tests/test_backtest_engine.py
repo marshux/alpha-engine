@@ -98,7 +98,10 @@ def test_circuit_breaker_flattens_and_halts_losses():
     closes = np.concatenate([np.full(150, 100.0), np.linspace(100.0, 20.0, n - 150)])
     prices = {"A": _series_df(closes, n)}
     config = _base_strategy_config(
-        risk={"stop_loss_pct": 0.99, "max_drawdown_pct": 0.10},
+        # cooldown far longer than the remaining test window, so this test
+        # isolates the "halts losses immediately" behavior from re-entry
+        # (covered separately in test_circuit_breaker_reenters_after_cooldown)
+        risk={"stop_loss_pct": 0.99, "max_drawdown_pct": 0.10, "circuit_breaker_cooldown_periods": 999},
         portfolio={
             "top_n": 1,
             "max_position_weight": 1.0,
@@ -114,6 +117,46 @@ def test_circuit_breaker_flattens_and_halts_losses():
     assert tail.max() == pytest.approx(tail.min(), rel=1e-9)
     # some weights_history entries should be empty (flattened to cash)
     assert any(w.empty for w in result.weights_history.values())
+
+
+def test_circuit_breaker_reenters_after_cooldown():
+    n = 400
+    # flat, then a sharp one-period crash (triggers the breaker immediately),
+    # then flat through the cooldown window, then a strong recovery -- the
+    # strategy should re-enter and grow from the post-cooldown equity level
+    # rather than staying locked in cash for the rest of the run
+    closes = np.concatenate(
+        [
+            np.full(90, 100.0),
+            np.full(1, 50.0),  # crash
+            np.full(59, 50.0),  # flat while cooldown elapses
+            np.linspace(50.0, 200.0, n - 150),  # recovery
+        ]
+    )
+    prices = {"A": _series_df(closes, n)}
+    config = _base_strategy_config(
+        risk={"stop_loss_pct": 0.99, "max_drawdown_pct": 0.10, "circuit_breaker_cooldown_periods": 4},
+        portfolio={
+            "top_n": 1,
+            "max_position_weight": 1.0,
+            "max_sector_weight": 1.0,
+            "sizing": "equal_weight",
+        },
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config)
+
+    dates = sorted(result.weights_history.keys())
+    # find the first rebalance after the crash where the strategy is holding
+    # a position again (re-entered)
+    reentry_idx = next(
+        i for i, d in enumerate(dates) if not result.weights_history[d].empty and i > 5
+    )
+    reentry_date = dates[reentry_idx]
+    equity_at_reentry = result.equity_curve.loc[reentry_date]
+
+    assert result.equity_curve.iloc[-1] > equity_at_reentry  # grew after re-entering
+    assert any(w.empty for w in result.weights_history.values())  # was flattened at some point
 
 
 def test_metrics_cagr_and_drawdown_on_known_curve():
