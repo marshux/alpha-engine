@@ -1,0 +1,32 @@
+# Strategy parameters consumed by the deterministic decision engine
+# (src/alpha_engine/decision/*). Changing weights/thresholds here changes
+# backtest behavior without touching code.
+
+rebalance: weekly  # weekly | biweekly | monthly
+
+signal_weights:
+  momentum: 0.4
+  mean_reversion: 0.25
+  volatility: 0.15   # lower realized vol scores higher (risk-adjusted tilt)
+  news_ai: 0.2        # only applied in live/paper trading -- the backtester
+                      # never supplies a news_ai column (web search can't be
+                      # date-scoped to the past, see signals/news_ai.py), so
+                      # this weight has no effect on historical backtests
+
+portfolio:
+  top_n: 15                  # number of positions held at any time
+  max_position_weight: 0.12  # single-position cap
+  max_sector_weight: 0.30    # sector exposure cap (sector ETFs count as their own sector)
+  sizing: volatility_scaled  # volatility_scaled | equal_weight
+
+risk:
+  stop_loss_pct: 0.15        # per-position stop, evaluated at each rebalance
+  max_drawdown_pct: 0.20     # portfolio-level circuit breaker -> flatten to cash
+
+costs:
+  commission_bps: 1.0
+  slippage_bps: 5.0
+
+backtest:
+  initial_capital: 100000
+  benchmark: SPY

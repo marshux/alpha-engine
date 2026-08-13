@@ -1,0 +1,74 @@
+# Tradable universe for v1. Explicit ticker lists rather than scraping live
+# S&P 500 membership: membership changes over time, and silently following
+# an index's current constituent list into a historical backtest introduces
+# survivorship bias. This list should be revisited deliberately, not auto-updated.
+
+benchmarks:
+  - SPY
+  - VOO
+  - VTI
+
+sector_etfs:
+  - XLK   # Technology
+  - XLF   # Financials
+  - XLE   # Energy
+  - XLV   # Health Care
+  - XLI   # Industrials
+  - XLY   # Consumer Discretionary
+  - XLP   # Consumer Staples
+  - XLU   # Utilities
+  - XLB   # Materials
+  - XLRE  # Real Estate
+  - XLC   # Communication Services
+
+large_caps:
+  - AAPL
+  - MSFT
+  - NVDA
+  - GOOGL
+  - AMZN
+  - META
+  - AVGO
+  - TSLA
+  - BRK-B
+  - LLY
+  - JPM
+  - V
+  - UNH
+  - XOM
+  - MA
+  - COST
+  - HD
+  - PG
+  - NFLX
+  - JNJ
+  - BAC
+  - CRM
+  - ABBV
+  - ORCL
+  - CVX
+  - KO
+  - MRK
+  - AMD
+  - PEP
+  - ADBE
+  - WMT
+  - TMO
+  - LIN
+  - MCD
+  - ABT
+  - CSCO
+  - ACN
+  - DHR
+  - INTU
+  - IBM
+  - GE
+  - TXN
+  - PM
+  - QCOM
+  - CAT
+  - VZ
+  - AMGN
+  - NOW
+  - ISRG
+  - SPGI

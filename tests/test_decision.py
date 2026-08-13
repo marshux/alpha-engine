@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from alpha_engine.decision import portfolio, risk
+from alpha_engine.decision.scorer import combine_scores
+
+
+def test_combine_scores_weighted_sum():
+    table = pd.DataFrame(
+        {
+            "momentum": [1.0, -1.0, 0.0],
+            "mean_reversion": [0.0, 1.0, -1.0],
+        },
+        index=["A", "B", "C"],
+    )
+    weights = {"momentum": 0.5, "mean_reversion": 0.5}
+
+    scores = combine_scores(table, weights)
+
+    assert scores["A"] == pytest.approx(0.5)
+    assert scores["B"] == pytest.approx(0.0)
+    assert scores["C"] == pytest.approx(-0.5)
+    # sorted descending
+    assert list(scores.index) == ["A", "B", "C"]
+
+
+def test_combine_scores_treats_missing_signal_as_neutral():
+    table = pd.DataFrame({"momentum": [1.0, 2.0]}, index=["A", "B"])
+    # news_ai weighted but absent from the table entirely
+    weights = {"momentum": 1.0, "news_ai": 0.5}
+
+    scores = combine_scores(table, weights)
+
+    assert scores["A"] == pytest.approx(1.0)
+    assert scores["B"] == pytest.approx(2.0)
+
+
+def test_combine_scores_zero_weight_ignored_even_if_column_has_nan():
+    table = pd.DataFrame({"momentum": [1.0, 2.0], "news_ai": [None, None]}, index=["A", "B"])
+    weights = {"momentum": 1.0, "news_ai": 0.0}
+
+    scores = combine_scores(table, weights)
+
+    assert scores["A"] == pytest.approx(1.0)
+    assert scores["B"] == pytest.approx(2.0)
+
+
+def test_select_top_n():
+    scores = pd.Series({"A": 3.0, "B": 1.0, "C": 2.0, "D": -1.0})
+    top2 = portfolio.select_top_n(scores, 2)
+    assert list(top2.index) == ["A", "C"]
+
+
+def test_size_positions_equal_weight():
+    selected = pd.Series({"A": 3.0, "B": 2.0})
+    weights = portfolio.size_positions(selected, None, "equal_weight", max_position_weight=1.0)
+    assert weights["A"] == pytest.approx(0.5)
+    assert weights["B"] == pytest.approx(0.5)
+
+
+def test_size_positions_volatility_scaled_favors_low_vol():
+    selected = pd.Series({"A": 1.0, "B": 1.0})
+    vol = pd.Series({"A": 0.1, "B": 0.4})
+    weights = portfolio.size_positions(
+        selected, vol, "volatility_scaled", max_position_weight=1.0
+    )
+    assert weights["A"] > weights["B"]
+    assert weights.sum() == pytest.approx(1.0)
+
+
+def test_size_positions_caps_leave_excess_as_cash():
+    selected = pd.Series({"A": 1.0, "B": 1.0, "C": 1.0})
+    weights = portfolio.size_positions(
+        selected, None, "equal_weight", max_position_weight=0.2
+    )
+    # 1/3 each exceeds the 0.2 cap -> each capped to 0.2, total invested is
+    # 0.6 (60%), the remaining 40% is deliberately left as cash, not
+    # redistributed
+    assert (weights <= 0.2 + 1e-9).all()
+    assert weights.sum() == pytest.approx(0.6)
+
+
+def test_size_positions_below_cap_is_unaffected():
+    selected = pd.Series({"A": 1.0, "B": 1.0})
+    weights = portfolio.size_positions(
+        selected, None, "equal_weight", max_position_weight=0.9
+    )
+    assert weights.sum() == pytest.approx(1.0)
+
+
+def test_size_positions_volatility_scaled_requires_full_coverage():
+    selected = pd.Series({"A": 1.0, "B": 1.0})
+    vol = pd.Series({"A": 0.1})  # missing B
+    with pytest.raises(ValueError):
+        portfolio.size_positions(selected, vol, "volatility_scaled", max_position_weight=1.0)
+
+
+def test_apply_sector_cap_scales_down_overweight_sector():
+    weights = pd.Series({"A": 0.3, "B": 0.3, "C": 0.4})
+    sector_map = {"A": "tech", "B": "tech", "C": "energy"}
+    capped = portfolio.apply_sector_cap(weights, sector_map, max_sector_weight=0.4)
+    assert capped["A"] + capped["B"] == pytest.approx(0.4)
+    assert capped["C"] == pytest.approx(0.4)  # untouched, already at cap
+
+
+def test_apply_sector_cap_leaves_unknown_symbols_alone():
+    weights = pd.Series({"A": 0.6})
+    capped = portfolio.apply_sector_cap(weights, sector_map={}, max_sector_weight=0.3)
+    assert capped["A"] == pytest.approx(0.6)
+
+
+def test_stopped_out_positions():
+    entries = {"A": 100.0, "B": 50.0}
+    current = {"A": 84.0, "B": 49.0}  # A down 16%, B down 2%
+    stopped = risk.stopped_out_positions(entries, current, stop_loss_pct=0.15)
+    assert stopped == {"A"}
+
+
+def test_circuit_breaker_triggers_on_drawdown():
+    equity = pd.Series([100, 120, 110, 90])  # peak 120 -> 90 is -25%
+    assert risk.circuit_breaker_triggered(equity, max_drawdown_pct=0.20) is True
+
+
+def test_circuit_breaker_not_triggered_within_tolerance():
+    equity = pd.Series([100, 120, 110])  # peak 120 -> 110 is ~-8.3%
+    assert risk.circuit_breaker_triggered(equity, max_drawdown_pct=0.20) is False
