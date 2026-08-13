@@ -148,14 +148,32 @@ Pedersen's "Quality Minus Junk", 2013) but the logic is intuitive:
 well-run, financially sound businesses are less likely to blow up, and
 the market has historically underpriced that safety somewhat.
 
-**News/AI sentiment** (`signals/news_ai.py`, live-only) — Claude searches
-recent news per symbol and returns a structured sentiment score. This
-isn't a classic academic factor; it's a bet that a careful reader of
-breaking news (earnings surprises, guidance changes, lawsuits, management
-changes) can extract a faster or more nuanced signal than pure historical
-price/fundamentals data provides. It's the newest, least-validated piece
-of the system by design — see the Core Design Constraint below for why
-it's kept on a short leash.
+**AI theme tilt** (`signals/ai_theme.py`) — a deliberate directional bet,
+not a backtested academic factor: a hand-graded intensity map
+(`config/themes.yaml`) tilts the portfolio toward names with meaningful AI
+exposure (e.g. Nvidia, TSMC, hyperscalers), graded rather than all-or-
+nothing (Nvidia scores higher than a company with a smaller AI-related
+revenue share). This is a **thesis**, not a validated factor like momentum
+or value — it exists because the person running this system believes AI
+will keep driving outsized returns, and wants deliberate, bounded exposure
+to that thesis rather than none at all. The bound matters: a per-portfolio
+cap (`portfolio.max_theme_weight`) limits how much the whole portfolio can
+concentrate in AI-tagged names regardless of how strongly they rank —
+capital that would exceed the cap is left as cash, not redistributed
+elsewhere, keeping the hedge simple and deterministic.
+
+**AI-sector sentiment** (`signals/news_ai.py`, live-only) — one research
+call per rebalance (not per-symbol) where Claude searches recent news (and
+optionally X/Twitter) for AI-sector-wide sentiment — earnings, capex plans,
+regulatory news, major model or product releases — and returns a
+structured score. This *isn't* a per-stock ranking signal; it never joins
+the weighted-sum scoring above. Instead it deterministically scales the AI
+theme cap itself: strong positive sentiment loosens the cap (more room for
+the tilt), negative sentiment tightens it (more defensive), weighted by
+the research's own stated confidence so a shaky read barely moves the cap.
+It's the newest, least-validated piece of the system by design — see the
+Core Design Constraint below for why it's kept on a short leash, applied
+only to a risk parameter rather than to stock selection itself.
 
 **Why combine several signals instead of picking the "best" one?** The
 same reason a diversified stock portfolio beats betting on one stock:

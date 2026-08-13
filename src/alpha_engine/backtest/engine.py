@@ -74,7 +74,6 @@ def run_backtest(
     prices: dict[str, pd.DataFrame],
     signal_weights: dict[str, float],
     strategy_config: dict,
-    news_signal: pd.DataFrame | None = None,
     sector_map: dict[str, str] | None = None,
     fundamentals: dict[str, pd.DataFrame] | None = None,
     start: pd.Timestamp | None = None,
@@ -82,12 +81,7 @@ def run_backtest(
     benchmark_prices: pd.DataFrame | None = None,
     theme_weights: dict[str, float] | None = None,
 ) -> BacktestResult:
-    """`news_signal`, if provided: DataFrame indexed by rebalance date with
-    one column per symbol, holding precomputed/cached AI news scores
-    (already z-scored) -- kept separate from `prices` since it comes from a
-    different data source (signals/news_ai.py) fetched independently.
-
-    `sector_map`, if provided: symbol -> sector name (config/sectors.yaml),
+    """`sector_map`, if provided: symbol -> sector name (config/sectors.yaml),
     used for the portfolio's sector-exposure cap.
 
     `fundamentals`, if provided: symbol -> quarterly fundamentals DataFrame
@@ -220,8 +214,6 @@ def run_backtest(
         signal_table = pd.DataFrame(
             {name: mod.compute(prices, as_of) for name, mod in SIGNAL_MODULES.items()}
         )
-        if news_signal is not None and as_of in news_signal.index:
-            signal_table["news_ai"] = news_signal.loc[as_of]
         if fundamentals is not None:
             signal_table["value"] = value.compute(prices, fundamentals, as_of)
             signal_table["quality"] = quality.compute(fundamentals, as_of)

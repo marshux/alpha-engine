@@ -23,7 +23,15 @@ COPY pyproject.toml ./
 COPY src/ ./src/
 COPY config/ ./config/
 COPY web/backend/ ./web/backend/
-RUN pip install --no-cache-dir ".[web]"
+# Editable install (-e), not a regular one: alpha_engine's own config/cache
+# path resolution (src/alpha_engine/config.py, data/cache.py) derives
+# REPO_ROOT from `Path(__file__).resolve().parents[N]`, which assumes the
+# package is running from its source tree. A regular `pip install` copies
+# the source into site-packages instead, breaking that assumption --
+# config/universe.yaml then gets looked up under
+# /usr/local/lib/python3.11/config/ instead of /app/config/. -e keeps
+# __file__ pointing at /app/src/alpha_engine/..., matching local dev.
+RUN pip install --no-cache-dir -e ".[web]"
 
 # Built frontend lands at web/backend/static -- see STATIC_DIR in
 # web/backend/app/main.py, which serves it (with SPA-route fallback to

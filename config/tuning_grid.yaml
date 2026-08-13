@@ -10,21 +10,21 @@
 signal_weights:
   # balanced: the current config/strategy.yaml defaults -- no single factor
   # dominates, relies on diversification across uncorrelated factor risk.
-  - {momentum: 0.3, mean_reversion: 0.2, volatility: 0.1, value: 0.15, quality: 0.15, news_ai: 0.1}
+  - {momentum: 0.3, mean_reversion: 0.2, volatility: 0.1, value: 0.15, quality: 0.15}
   # momentum_tilt: momentum is the single most-replicated academic factor
   # -- weight it heavily and see if that alone earns its keep.
-  - {momentum: 0.5, mean_reversion: 0.15, volatility: 0.1, value: 0.1, quality: 0.15, news_ai: 0.0}
+  - {momentum: 0.5, mean_reversion: 0.15, volatility: 0.1, value: 0.1, quality: 0.15}
   # quality_value_tilt: fundamentals-driven and defensive -- only matters
   # when --fundamentals is passed (thin coverage on older backtest dates).
-  - {momentum: 0.15, mean_reversion: 0.1, volatility: 0.1, value: 0.3, quality: 0.35, news_ai: 0.0}
+  - {momentum: 0.15, mean_reversion: 0.1, volatility: 0.1, value: 0.3, quality: 0.35}
   # defensive_lowvol: heavy tilt toward the low-volatility anomaly.
-  - {momentum: 0.15, mean_reversion: 0.15, volatility: 0.4, value: 0.15, quality: 0.15, news_ai: 0.0}
+  - {momentum: 0.15, mean_reversion: 0.15, volatility: 0.4, value: 0.15, quality: 0.15}
   # equal_weight_factors: no prior about which factor is best -- let
   # diversification across all 5 do the work.
-  - {momentum: 0.2, mean_reversion: 0.2, volatility: 0.2, value: 0.2, quality: 0.2, news_ai: 0.0}
+  - {momentum: 0.2, mean_reversion: 0.2, volatility: 0.2, value: 0.2, quality: 0.2}
   # momentum_quality_barbell: only the two single most-robust academic
   # factors, nothing else -- a "pure signal" test.
-  - {momentum: 0.4, mean_reversion: 0.0, volatility: 0.0, value: 0.0, quality: 0.6, news_ai: 0.0}
+  - {momentum: 0.4, mean_reversion: 0.0, volatility: 0.0, value: 0.0, quality: 0.6}
 
 portfolio.sizing: [equal_weight, volatility_scaled, min_variance]
 portfolio.top_n: [10, 15]

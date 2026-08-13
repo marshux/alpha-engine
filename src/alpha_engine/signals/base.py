@@ -1,12 +1,14 @@
 """Shared interface and helpers for signal modules (momentum, mean_reversion,
-volatility, news_ai).
+volatility, ai_theme).
 
 Every signal module exposes a module-level `compute(prices, as_of) -> pd.Series`
 function: `prices` is `{symbol: OHLCV DataFrame}` (as returned by
 `data.equities.get_universe_prices`), `as_of` is the rebalance date, and the
 returned Series (indexed by symbol) is a cross-sectionally z-scored value —
 comparable across signals so the decision engine can combine them by simple
-weighted sum.
+weighted sum. `value.py`/`quality.py` (need fundamentals) and `news_ai.py`
+(single portfolio-level scalar, not per-symbol -- see its own docstring)
+diverge from this shape and aren't called through it.
 """
 from __future__ import annotations
 

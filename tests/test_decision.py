@@ -210,3 +210,41 @@ def test_regime_is_risk_on_respects_as_of_no_lookahead():
     df = _benchmark_df(closes)
     as_of = df.index[24]  # last day before the crash
     assert risk.regime_is_risk_on(df, as_of=as_of, ma_window=20) is True
+
+
+def test_modulate_theme_cap_positive_sentiment_loosens_cap():
+    base = 0.35
+    loosened = portfolio.modulate_theme_cap(base, sentiment=1.0, confidence=1.0, sensitivity=0.5)
+    assert loosened > base
+
+
+def test_modulate_theme_cap_negative_sentiment_tightens_cap():
+    base = 0.35
+    tightened = portfolio.modulate_theme_cap(base, sentiment=-1.0, confidence=1.0, sensitivity=0.5)
+    assert tightened < base
+
+
+def test_modulate_theme_cap_low_confidence_barely_moves_cap():
+    base = 0.35
+    # Strong sentiment but near-zero confidence should land close to base.
+    result = portfolio.modulate_theme_cap(base, sentiment=1.0, confidence=0.01, sensitivity=0.5)
+    assert abs(result - base) < 0.01
+
+
+def test_modulate_theme_cap_neutral_sentiment_is_a_no_op():
+    base = 0.35
+    assert portfolio.modulate_theme_cap(base, sentiment=0.0, confidence=1.0) == base
+
+
+def test_modulate_theme_cap_clips_to_bounds():
+    # Extreme sentiment/confidence/sensitivity would blow past any
+    # reasonable cap without the clip.
+    result = portfolio.modulate_theme_cap(
+        0.35, sentiment=1.0, confidence=1.0, sensitivity=10.0, min_weight=0.15, max_weight=0.50
+    )
+    assert result == 0.50
+
+    result = portfolio.modulate_theme_cap(
+        0.35, sentiment=-1.0, confidence=1.0, sensitivity=10.0, min_weight=0.15, max_weight=0.50
+    )
+    assert result == 0.15

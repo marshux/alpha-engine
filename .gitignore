@@ -14,3 +14,6 @@ data/web.db
 data/web_tearsheets/
 web/frontend/node_modules/
 web/frontend/dist/
+
+# live trading
+data/live_state.json

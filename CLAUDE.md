@@ -9,24 +9,27 @@ execution yet.
 ## Core design constraint
 
 **AI is allowed to research and score; it is never allowed to decide.**
-`signals/news_ai.py` calls Claude with the `web_search` tool to research
-news and returns a *structured* sentiment score (forced via
-`output_config.format` — not free text). That score becomes just another
-numeric column. Everything downstream of the signal table
-(`decision/scorer.py`, `decision/portfolio.py`, `decision/risk.py`) is a
-plain weighted-sum/rules pipeline with no LLM call anywhere in it. This is
-what makes backtests trustworthy: given the same signal inputs, the
-decision layer always produces the same trades. Preserve this separation in
-any future work — don't let an LLM call creep into the decision path.
+`signals/news_ai.py` calls Claude with the `web_search` tool (and,
+optionally, X search) to research current AI-sector sentiment and returns a
+*structured* score (forced via `output_config.format` — not free text).
+That score never enters the per-stock signal table at all — it feeds one
+plain deterministic formula, `decision/portfolio.py::modulate_theme_cap`,
+which scales the AI-theme concentration cap up or down. Everything
+downstream of signal generation (`decision/scorer.py`,
+`decision/portfolio.py`, `decision/risk.py`) is a plain weighted-sum/rules
+pipeline with no LLM call anywhere in it. This is what makes backtests
+trustworthy: given the same signal inputs, the decision layer always
+produces the same trades. Preserve this separation in any future work —
+don't let an LLM call creep into the decision path.
 
 ## Architecture
 
 ```
 data/equities.py       →  signals/*.py           →  decision/scorer.py  →  decision/portfolio.py  →  backtest/engine.py  →  backtest/report.py
 data/fundamentals.py      (momentum,                 (weighted sum          (top-N, sizing,           (walk-forward loop,     backtest/walkforward.py
-  (yfinance,                mean_reversion,            of z-scored            caps)                     turnover costs,
-   parquet cache)           volatility, value,         signals)                                          circuit breaker)
-                            quality, news_ai)
+  (yfinance,                mean_reversion,            of z-scored            caps -- incl. AI theme    turnover costs,
+   parquet cache)           volatility, value,         signals)               cap, live-only modulated  circuit breaker)
+                            quality, ai_theme)                                by signals/news_ai.py)
 ```
 
 - **`data/equities.py`**: `yfinance` OHLCV fetch, read-through parquet cache
@@ -45,8 +48,9 @@ data/fundamentals.py      (momentum,                 (weighted sum          (top
   comparable and combinable by simple weighted sum. `value.py`/`quality.py`
   diverge from this shape (they need fundamentals data, and value.py needs
   both prices and fundamentals) — `backtest/engine.py` calls them
-  explicitly rather than through the uniform `SIGNAL_MODULES` dict, the
-  same way it already special-cases `news_ai.py`.
+  explicitly rather than through the uniform `SIGNAL_MODULES` dict.
+  `signals/news_ai.py` diverges further still: it isn't a per-symbol signal
+  at all (see its own entry below).
 - **`signals/momentum.py`, `mean_reversion.py`, `volatility.py`**: pure
   pandas/numpy, fully deterministic. `volatility.py` also exposes
   `raw_annualized_vol()` (for volatility-scaled sizing) and
@@ -58,11 +62,31 @@ data/fundamentals.py      (momentum,                 (weighted sum          (top
   (fundamentals only). Both silently score neutral for symbols/dates
   without fundamentals coverage — same missing-signal handling as
   everywhere else, not a special case.
-- **`signals/news_ai.py`**: **live-only, never called by the backtester.**
-  `web_search` queries the *current* web — using it inside a historical
-  backtest would be lookahead bias (a 2021 rebalance would see 2026 search
-  results). `backtest/engine.py` has no import of this module. Results are
-  cached by `(symbol, date)` under `data/cache/news_ai/`.
+- **`signals/news_ai.py`**: **live-only, never called by the backtester,
+  and deliberately macro rather than per-symbol.** `web_search` (and,
+  optionally, X search — see below) queries the *current* web — using
+  either inside a historical backtest would be lookahead bias (a 2021
+  rebalance would see 2026 search results). `backtest/engine.py` has no
+  import of this module. An earlier per-ticker version of this signal made
+  one research call per symbol (63 calls/rebalance at full universe) at
+  real, meaningful cost (~$27/rebalance, ~$1,400/year at weekly cadence)
+  for a component that only ever fed a 0.1-weighted per-stock signal;
+  `compute_ai_sector_sentiment()` instead makes a single call researching
+  AI-sector sentiment as a whole, ~60x cheaper, and its output
+  (`{sentiment, confidence, ...}`) is consumed by
+  `decision/portfolio.py::modulate_theme_cap` as a portfolio-level risk
+  input, not joined into the per-stock signal table at all. Results are
+  cached by date under `data/cache/news_ai/`. X/Twitter search via X's own
+  MCP server (`api.x.com/mcp`) is opt-in, gated on
+  `X_MCP_AUTHORIZATION_TOKEN` being set — it's billed separately and
+  per-action by X itself, not bundled into the Anthropic API bill, so it
+  must not turn on just because `ANTHROPIC_API_KEY` is configured. Without
+  the token, this signal is `web_search`-only. See `.env.example`. (As of
+  this writing, Anthropic's MCP connector fails to reach X's MCP server
+  server-side — `Error while communicating with MCP server` — even though
+  the token and URL are independently verified correct via a raw MCP
+  `initialize` call; left wired up and dormant pending a fix on Anthropic's
+  side, no code changes needed once it resolves.)
 - **`decision/scorer.py`**: weighted sum of the signal table. Missing
   signal values are treated as neutral (0), not dropped — a symbol isn't
   excluded from ranking just because one signal has no data for it yet.
@@ -189,11 +213,42 @@ the two agree — see `test_walkforward.py`'s
 `test_run_walk_forward_grid_search_picks_higher_train_sharpe_config` for
 the pattern.
 
-## AI news signal — setup for live use
+## Paper trading (live)
 
-Requires `ANTHROPIC_API_KEY` (see `.env.example`). Not wired into any CLI
-command yet — it's a live-trading-phase feature, added once paper trading
-starts. When integrating it, pass a `news_signal` DataFrame into
-`run_backtest()`/a live runner (indexed by date, one column per symbol) —
-never call `signals/news_ai.compute()` from inside a historical backtest
-loop.
+`alpha-engine live-rebalance [--dry-run]` runs one real rebalance against
+an Alpaca **paper** account — the only place `signals/news_ai.py`'s live
+AI-sector-sentiment research is ever actually called (see that module's
+docstring for why it must never run inside `backtest/engine.py`). Requires
+the `live` extra (`pip install -e ".[live]"`) and `ALPACA_API_KEY`/
+`ALPACA_SECRET_KEY` (paper-trading keys — see `.env.example`).
+
+- **`broker/alpaca.py`**: thin `alpaca-py` wrapper. `paper=True` is
+  hardcoded in `get_client()`, not a runtime toggle — going live with real
+  money is meant to be a deliberate code change later, not a config flip.
+  `compute_orders()` diffs target weights against currently-held Alpaca
+  positions (unioned, so a position dropped from `target_weights` gets an
+  implicit sell) and returns notional (dollar-denominated) market orders,
+  sidestepping fractional-share rounding. `submit_orders()` submits
+  sells before buys so a same-batch sell's freed cash is available before
+  the corresponding buy is attempted.
+- **`live/state.py`**: the circuit breaker's `breaker_peak`/
+  `cooldown_remaining` and the last rebalance date, persisted as JSON at
+  `data/live_state.json` (not the web dashboard's SQLite DB) — this state
+  has no equivalent on Alpaca's side, and living inside `alpha_engine`
+  itself is what lets the CLI and a future scheduler job share it without
+  either depending on the other.
+- **`live/runner.py`**: `run_live_rebalance()` mirrors
+  `backtest/engine.py`'s per-date risk-check control flow exactly
+  (cooldown → circuit breaker → regime filter → stop-loss) evaluated once
+  per call instead of once per historical date. Position entry prices for
+  the stop-loss come directly from Alpaca's own `avg_entry_price` rather
+  than being tracked separately. Idempotent per calendar day (guards on
+  `live/state.py`'s `last_rebalance_date`) so an accidental double-run
+  doesn't double-submit orders. `decision/scorer.py`,
+  `decision/portfolio.py`, and `decision/risk.py` are reused completely
+  unchanged — this is what keeps live trading bound by the same
+  deterministic decision layer a backtest already validated.
+
+Known v1 scope limits, not oversights: paper trading only (see above);
+weekly cadence only, no intraday execution; order submission is treated
+as the audit record, not reconciled against actual fills.

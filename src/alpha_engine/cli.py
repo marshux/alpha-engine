@@ -196,6 +196,33 @@ def cmd_walkforward(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_live_rebalance(args: argparse.Namespace) -> int:
+    # Imported here, not at module top -- alpha_engine.live depends on the
+    # optional `live` extra (alpaca-py), which a backtest-only/CI install
+    # shouldn't be forced to pull in just to import cli.py at all.
+    from alpha_engine.live.runner import run_live_rebalance
+
+    result = run_live_rebalance(dry_run=args.dry_run)
+
+    if result.skipped_reason:
+        print(f"Skipped: {result.skipped_reason}")
+        return 0
+
+    print(f"Account equity: ${result.account_equity:,.2f}")
+    print(f"Target weights ({len(result.target_weights)} positions):")
+    for symbol, weight in result.target_weights.sort_values(ascending=False).items():
+        print(f"  {symbol:<8} {weight:.2%}")
+
+    label = "Would submit" if result.dry_run else "Submitted"
+    if not result.orders:
+        print(f"{label}: no orders (already at target allocation)")
+    else:
+        print(f"{label} {len(result.orders)} order(s):")
+        for order in result.orders:
+            print(f"  {order['side']:<4} {order['symbol']:<8} ${order['notional']:>10,.2f}  [{order['status']}]")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="alpha-engine")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -231,6 +258,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Fetch fundamentals and include value/quality signals (slower; thin coverage on older dates)",
     )
     wf.set_defaults(func=cmd_walkforward)
+
+    live = sub.add_parser(
+        "live-rebalance", help="Run one live/paper rebalance against Alpaca (requires the `live` extra)"
+    )
+    live.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute target weights and orders but do not submit them",
+    )
+    live.set_defaults(func=cmd_live_rebalance)
 
     args = parser.parse_args(argv)
     return args.func(args)

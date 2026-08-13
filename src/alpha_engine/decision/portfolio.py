@@ -152,6 +152,35 @@ def apply_theme_cap(
     return adjusted
 
 
+def modulate_theme_cap(
+    base_max_theme_weight: float,
+    sentiment: float,
+    confidence: float,
+    sensitivity: float = 0.5,
+    min_weight: float = 0.15,
+    max_weight: float = 0.50,
+) -> float:
+    """Scales the AI-theme concentration cap by a live AI-sector sentiment
+    read (signals/news_ai.py::compute_ai_sector_sentiment) -- positive
+    sentiment loosens the cap (more room for the tilt), negative sentiment
+    tightens it (more defensive), weighted by the research's own stated
+    confidence so a low-confidence read barely moves the cap at all.
+
+    Purely deterministic given `(sentiment, confidence)`: the AI supplies
+    two numbers, this formula decides what they mean for the cap. Live-only
+    by construction -- there's no historical sentiment feed for the
+    backtester to call this with, so `backtest/engine.py` never does; it
+    always uses the static `max_theme_weight` from strategy.yaml unmodified.
+
+    `sentiment`/`confidence` are each expected in [-1, 1] / [0, 1] (the
+    schema `signals/news_ai.py` forces), but this isn't enforced here --
+    the final `min_weight`/`max_weight` clip is what actually bounds the
+    result regardless of input range.
+    """
+    adjustment = 1.0 + sentiment * confidence * sensitivity
+    return float(min(max(base_max_theme_weight * adjustment, min_weight), max_weight))
+
+
 def build_portfolio(
     scores: pd.Series,
     volatility: pd.Series | pd.DataFrame | None,

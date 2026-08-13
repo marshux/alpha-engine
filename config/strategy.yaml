@@ -13,10 +13,6 @@ signal_weights:
                       # thin for older backtest dates, see signals/value.py
   quality: 0.15       # ROE + low leverage composite -- same fundamentals
                       # coverage caveat as value, see signals/quality.py
-  news_ai: 0.1        # only applied in live/paper trading -- the backtester
-                      # never supplies a news_ai column (web search can't be
-                      # date-scoped to the past, see signals/news_ai.py), so
-                      # this weight has no effect on historical backtests
   ai_theme: 0.15      # deliberate directional tilt toward AI-exposed names
                       # (config/themes.yaml) -- NOT a backtested academic
                       # factor like the others, a discretionary bet. Risk is
@@ -31,7 +27,14 @@ portfolio:
   max_sector_weight: 0.30    # sector exposure cap (sector ETFs count as their own sector)
   max_theme_weight: 0.35     # hedge: caps total portfolio weight in AI-tagged
                               # names regardless of how strongly they rank
-                              # (see decision/portfolio.apply_theme_cap)
+                              # (see decision/portfolio.apply_theme_cap). This
+                              # is the BASE value used as-is by the backtester;
+                              # live/paper runs additionally scale it by
+                              # current AI-sector sentiment before applying it
+                              # (see decision/portfolio.modulate_theme_cap and
+                              # live/runner.py) -- backtest and live can
+                              # therefore use a different effective cap on the
+                              # same nominal config, by design.
   sizing: equal_weight       # volatility_scaled | equal_weight | min_variance -- walk-forward
                               # picked equal_weight in 8/14 windows vs. 2/14 for
                               # volatility_scaled (the prior default); the fancier
