@@ -198,6 +198,156 @@ def test_start_end_produces_fewer_dates_than_unrestricted():
     assert len(restricted_result.equity_curve) < len(full_result.equity_curve)
 
 
+def test_regime_filter_holds_cash_during_benchmark_downtrend():
+    n = 300
+    # stock A trends up steadily the whole time -- signals alone would
+    # always want to hold it
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    prices = {"A": a}
+
+    # benchmark: up (0-99), sharp sustained decline (100-199, clearly below
+    # its own trailing MA), recovery (200-299)
+    benchmark_closes = np.concatenate(
+        [
+            np.linspace(100.0, 150.0, 100),
+            np.linspace(150.0, 80.0, 100),
+            np.linspace(80.0, 160.0, 100),
+        ]
+    )
+    benchmark_prices = _series_df(benchmark_closes, n)
+
+    config = _base_strategy_config(
+        portfolio={
+            "top_n": 1,
+            "max_position_weight": 1.0,
+            "max_sector_weight": 1.0,
+            "sizing": "equal_weight",
+        },
+        regime={"enabled": True, "ma_window_days": 20},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config, benchmark_prices=benchmark_prices)
+
+    dates = sorted(result.weights_history.keys())
+    downtrend_dates = [d for d in dates if benchmark_prices.index[130] <= d <= benchmark_prices.index[190]]
+    recovery_dates = [d for d in dates if d >= benchmark_prices.index[260]]
+
+    assert downtrend_dates, "test setup issue: no rebalance dates fell in the downtrend window"
+    assert recovery_dates, "test setup issue: no rebalance dates fell in the recovery window"
+    assert all(result.weights_history[d].empty for d in downtrend_dates)
+    assert all(not result.weights_history[d].empty for d in recovery_dates)
+
+
+def test_regime_filter_disabled_by_default_ignores_benchmark():
+    n = 200
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    prices = {"A": a}
+    # benchmark deep in a "downtrend" the whole time, but regime is not enabled
+    benchmark_prices = _series_df(np.linspace(150.0, 50.0, n), n)
+
+    config = _base_strategy_config(
+        portfolio={
+            "top_n": 1,
+            "max_position_weight": 1.0,
+            "max_sector_weight": 1.0,
+            "sizing": "equal_weight",
+        },
+    )  # no "regime" key at all
+
+    result = run_backtest(prices, config["signal_weights"], config, benchmark_prices=benchmark_prices)
+
+    dates = sorted(result.weights_history.keys())
+    assert any(not result.weights_history[d].empty for d in dates[5:])
+
+
+def test_theme_weights_break_ties_toward_tagged_symbol():
+    n = 60
+    # two symbols with IDENTICAL price behavior -- every price-based signal
+    # scores them identically, so any selection difference must come from
+    # the ai_theme signal specifically
+    closes = 100 * (1.001 ** np.arange(n))
+    prices = {"TAGGED": _series_df(closes, n), "OTHER": _series_df(closes.copy(), n)}
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 0.0, "mean_reversion": 0.0, "volatility": 0.0, "ai_theme": 1.0},
+        portfolio={
+            "top_n": 1,
+            "max_position_weight": 1.0,
+            "max_sector_weight": 1.0,
+            "sizing": "equal_weight",
+        },
+    )
+
+    result = run_backtest(
+        prices, config["signal_weights"], config, theme_weights={"TAGGED": 1.0}
+    )
+
+    dates = sorted(result.weights_history.keys())
+    last_nonempty = [d for d in dates if not result.weights_history[d].empty][-1]
+    assert list(result.weights_history[last_nonempty].index) == ["TAGGED"]
+
+
+def test_volatility_scaled_sizing_survives_cold_start_with_history_free_signal():
+    # Regression test: ai_theme (and any other signal that doesn't need
+    # price history) can populate `scores` before any symbol has the ~20
+    # days volatility_scaled sizing requires. Selection must be filtered
+    # down to sizeable candidates before size_positions runs, not crash.
+    n = 60
+    closes = 100 * (1.001 ** np.arange(n))
+    prices = {"TAGGED": _series_df(closes, n), "OTHER": _series_df(closes.copy(), n)}
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 0.0, "mean_reversion": 0.0, "volatility": 0.0, "ai_theme": 1.0},
+        portfolio={
+            "top_n": 2,
+            "max_position_weight": 1.0,
+            "max_sector_weight": 1.0,
+            "sizing": "volatility_scaled",
+        },
+    )
+
+    # must not raise, even though at the first rebalance neither symbol has
+    # 20 days of history for volatility_scaled sizing yet
+    result = run_backtest(prices, config["signal_weights"], config, theme_weights={"TAGGED": 1.0})
+
+    dates = sorted(result.weights_history.keys())
+    assert result.weights_history[dates[0]].empty  # cold start: nothing sizeable yet
+    assert not result.weights_history[dates[-1]].empty  # eventually invests once history exists
+
+
+def test_volatility_scaled_sizing_survives_cold_start_with_fundamentals_signal():
+    # Same root cause as the test above, but this is the actual failure
+    # mode a real --fundamentals + volatility_scaled walk-forward run hit:
+    # quality/value are populated from fundamentals reports, which don't
+    # depend on price history either, so they can populate `scores` at a
+    # cold start too.
+    n = 30
+    closes = 100 * (1.001 ** np.arange(n))
+    prices = {"A": _series_df(closes, n), "B": _series_df(closes.copy(), n)}
+    fundamentals = {
+        "A": pd.DataFrame(
+            {"Stockholders Equity": [100.0], "Net Income": [20.0], "Total Debt": [10.0]},
+            index=pd.to_datetime(["2019-12-31"]),  # before the first rebalance date
+        ),
+    }
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 0.0, "mean_reversion": 0.0, "volatility": 0.0, "quality": 1.0},
+        portfolio={
+            "top_n": 2,
+            "max_position_weight": 1.0,
+            "max_sector_weight": 1.0,
+            "sizing": "volatility_scaled",
+        },
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config, fundamentals=fundamentals)
+
+    dates = sorted(result.weights_history.keys())
+    assert result.weights_history[dates[0]].empty
+    assert not result.weights_history[dates[-1]].empty
+
+
 def test_metrics_cagr_and_drawdown_on_known_curve():
     dates = pd.bdate_range("2020-01-01", periods=3)
     curve = pd.Series([100.0, 150.0, 90.0], index=dates)

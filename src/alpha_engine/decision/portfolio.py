@@ -125,14 +125,45 @@ def apply_sector_cap(
     return adjusted
 
 
+def apply_theme_cap(
+    weights: pd.Series, theme_symbols: dict[str, float] | set[str], max_theme_weight: float
+) -> pd.Series:
+    """Scale down the combined weight of every theme-tagged position if it
+    exceeds `max_theme_weight`, proportionally within the group -- same
+    mechanism as `apply_sector_cap`, but one aggregate cap across a single
+    named theme (e.g. signals/ai_theme.py's AI tilt) rather than per-GICS-
+    sector groups.
+
+    This is the "hedge" for a deliberate directional tilt: it bounds how
+    much the portfolio can concentrate in the theme, it does not offset
+    the theme's risk with an opposing position. `theme_symbols` can be the
+    theme's intensity dict directly (only membership matters here, not the
+    intensity value) or a plain set of symbols.
+    """
+    if not theme_symbols:
+        return weights
+    members = [s for s in weights.index if s in theme_symbols]
+    if not members:
+        return weights
+    adjusted = weights.copy()
+    theme_total = adjusted.loc[members].sum()
+    if theme_total > max_theme_weight:
+        adjusted.loc[members] = adjusted.loc[members] * (max_theme_weight / theme_total)
+    return adjusted
+
+
 def build_portfolio(
     scores: pd.Series,
     volatility: pd.Series | pd.DataFrame | None,
     sector_map: dict[str, str],
     config: dict,
+    theme_map: dict[str, float] | None = None,
 ) -> pd.Series:
     selected = select_top_n(scores, config["top_n"])
     weights = size_positions(
         selected, volatility, config["sizing"], config["max_position_weight"]
     )
-    return apply_sector_cap(weights, sector_map, config["max_sector_weight"])
+    weights = apply_sector_cap(weights, sector_map, config["max_sector_weight"])
+    if theme_map and "max_theme_weight" in config:
+        weights = apply_theme_cap(weights, theme_map, config["max_theme_weight"])
+    return weights

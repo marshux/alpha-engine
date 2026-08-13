@@ -21,9 +21,9 @@ import pandas as pd
 
 from alpha_engine.backtest.costs import turnover_cost
 from alpha_engine.decision.portfolio import build_portfolio
-from alpha_engine.decision.risk import stopped_out_positions
+from alpha_engine.decision.risk import regime_is_risk_on, stopped_out_positions
 from alpha_engine.decision.scorer import combine_scores
-from alpha_engine.signals import mean_reversion, momentum, quality, value, volatility
+from alpha_engine.signals import ai_theme, mean_reversion, momentum, quality, value, volatility
 
 SIGNAL_MODULES = {
     "momentum": momentum,
@@ -79,6 +79,8 @@ def run_backtest(
     fundamentals: dict[str, pd.DataFrame] | None = None,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
+    benchmark_prices: pd.DataFrame | None = None,
+    theme_weights: dict[str, float] | None = None,
 ) -> BacktestResult:
     """`news_signal`, if provided: DataFrame indexed by rebalance date with
     one column per symbol, holding precomputed/cached AI news scores
@@ -100,8 +102,22 @@ def run_backtest(
     of it). This is what backtest/walkforward.py uses to evaluate a single
     train/test window without starving signals of history at the window's
     start; slicing `prices` per-window would do exactly that.
+
+    `benchmark_prices`, if provided together with `strategy_config["regime"]
+    ["enabled"]`: OHLCV for the trend/regime filter (decision.risk.
+    regime_is_risk_on) -- when the benchmark is below its own trailing
+    moving average, the portfolio holds cash regardless of what individual
+    stock signals say, until the benchmark recovers above it again.
+
+    `theme_weights`, if provided: symbol -> AI-exposure intensity
+    (config/themes.yaml's `ai` mapping) -- adds the `ai_theme` signal
+    (signals/ai_theme.py) to the signal table, and the resulting
+    concentration in tagged names is capped by
+    `strategy_config["portfolio"]["max_theme_weight"]` if set (see
+    decision/portfolio.apply_theme_cap).
     """
     sector_map = sector_map or {}
+    regime_cfg = strategy_config.get("regime", {})
     all_dates = pd.DatetimeIndex(sorted(set().union(*(df.index for df in prices.values()))))
     dates = rebalance_dates(all_dates, strategy_config["rebalance"])
     if start is not None:
@@ -181,6 +197,24 @@ def run_backtest(
             prev_prices, has_prev = current_prices, True
             continue
 
+        if (
+            benchmark_prices is not None
+            and regime_cfg.get("enabled", False)
+            and not regime_is_risk_on(benchmark_prices, as_of, regime_cfg["ma_window_days"])
+        ):
+            # Unlike the circuit breaker, no cooldown here -- re-evaluated
+            # fresh every rebalance, so the portfolio resumes investing the
+            # moment the benchmark crosses back above its moving average.
+            turnover = weights.abs().sum()
+            equity -= turnover_cost(turnover, equity, cost_cfg)
+            equity_points[as_of] = equity
+            weights = pd.Series(dtype=float)
+            entry_prices = {}
+            weights_history[as_of] = weights
+            turnover_history[as_of] = turnover
+            prev_prices, has_prev = current_prices, True
+            continue
+
         stopped = stopped_out_positions(entry_prices, current_prices, risk_cfg["stop_loss_pct"])
 
         signal_table = pd.DataFrame(
@@ -191,6 +225,8 @@ def run_backtest(
         if fundamentals is not None:
             signal_table["value"] = value.compute(prices, fundamentals, as_of)
             signal_table["quality"] = quality.compute(fundamentals, as_of)
+        if theme_weights is not None:
+            signal_table["ai_theme"] = ai_theme.compute(prices, as_of, theme_weights)
 
         scores = combine_scores(signal_table, signal_weights)
         if stopped:
@@ -199,10 +235,23 @@ def run_backtest(
         sizing_data = None
         if portfolio_cfg["sizing"] == "volatility_scaled":
             sizing_data = volatility.raw_annualized_vol(prices, as_of)
+            # Only candidates with enough trailing history to be sized are
+            # eligible for selection at all. Without this, a signal that
+            # doesn't need price history itself (e.g. ai_theme, which only
+            # checks dict membership) can populate `scores` before any
+            # symbol has the ~20 days volatility_scaled sizing needs --
+            # size_positions would then correctly refuse to size a
+            # selected-but-unsizeable symbol (a real invariant it should
+            # keep enforcing), so the filtering has to happen up here,
+            # before selection, not by loosening that guard.
+            scores = scores[scores.index.isin(sizing_data.index)]
         elif portfolio_cfg["sizing"] == "min_variance":
             sizing_data = volatility.trailing_returns_matrix(prices, list(prices.keys()), as_of)
+            scores = scores[scores.index.isin(sizing_data.columns)]
 
-        target_weights = build_portfolio(scores, sizing_data, sector_map=sector_map, config=portfolio_cfg)
+        target_weights = build_portfolio(
+            scores, sizing_data, sector_map=sector_map, config=portfolio_cfg, theme_map=theme_weights
+        )
 
         turnover = weights.add(-target_weights, fill_value=0.0).abs().sum()
         equity -= turnover_cost(turnover, equity, cost_cfg)

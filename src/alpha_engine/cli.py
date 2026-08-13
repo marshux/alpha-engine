@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
+from typing import Callable
 
 import pandas as pd
 import yaml
@@ -11,8 +13,8 @@ import yaml
 from alpha_engine.backtest.engine import PERIODS_PER_YEAR, run_backtest
 from alpha_engine.backtest.metrics import benchmark_equity_curve, cagr, max_drawdown, summarize
 from alpha_engine.backtest.report import generate_tearsheet
-from alpha_engine.backtest.walkforward import generate_windows, run_walk_forward
-from alpha_engine.config import load_sector_map, load_strategy, load_universe, universe_symbols
+from alpha_engine.backtest.walkforward import generate_windows, run_walk_forward, total_walkforward_steps
+from alpha_engine.config import load_sector_map, load_strategy, load_themes, load_universe, universe_symbols
 from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.data.fundamentals import get_universe_fundamentals
 
@@ -21,6 +23,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     universe = load_universe()
     strategy = load_strategy(Path(args.config)) if args.config else load_strategy()
     sector_map = load_sector_map()
+    theme_weights = load_themes().get("ai", {})
 
     symbols = args.symbols if args.symbols else universe_symbols(universe)
     # Compare against every configured benchmark (SPY/VOO/VTI), not just the
@@ -29,7 +32,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     benchmark_symbols = universe.get("benchmarks") or [strategy["backtest"]["benchmark"]]
     primary_benchmark = strategy["backtest"]["benchmark"]
 
-    print(f"Fetching prices for {len(symbols)} symbols + benchmarks {', '.join(benchmark_symbols)}...")
+    print(f"Fetching prices for {len(symbols)} symbols + benchmarks {', '.join(benchmark_symbols)}...", flush=True)
     prices = get_universe_prices(symbols, args.start, args.end)
     if not prices:
         print("No price data fetched for any symbol -- aborting.", file=sys.stderr)
@@ -38,11 +41,17 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
     fundamentals = None
     if args.fundamentals:
-        print(f"Fetching fundamentals for {len(symbols)} symbols (coverage will be thin for older dates)...")
+        print(f"Fetching fundamentals for {len(symbols)} symbols (coverage will be thin for older dates)...", flush=True)
         fundamentals = get_universe_fundamentals(symbols)
 
     result = run_backtest(
-        prices, strategy["signal_weights"], strategy, sector_map=sector_map, fundamentals=fundamentals
+        prices,
+        strategy["signal_weights"],
+        strategy,
+        sector_map=sector_map,
+        fundamentals=fundamentals,
+        benchmark_prices=benchmark_prices.get(primary_benchmark),
+        theme_weights=theme_weights,
     )
     if result.equity_curve.empty:
         print("Backtest produced no equity points -- check date range vs data availability.", file=sys.stderr)
@@ -93,17 +102,58 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cli_progress_printer(min_interval_seconds: float = 5.0) -> Callable[[int, int], None]:
+    """A progress_callback for run_walk_forward that prints one line per
+    update, throttled to at most one line every `min_interval_seconds` (plus
+    always the first and last step) -- a multi-hour grid sweep would
+    otherwise either print nothing until it finishes (the original problem:
+    no way to tell if it's stuck or just slow) or spam a line per backtest,
+    which is just as useless when there are thousands of steps. Always
+    prints a fresh line (not \\r-overwritten) so this is equally readable
+    live in a terminal and after the fact via `tail`/`cat` on a redirected
+    log file.
+    """
+    start_time = time.monotonic()
+    last_print = 0.0
+
+    def _callback(done: int, total: int) -> None:
+        nonlocal last_print
+        now = time.monotonic()
+        if done < total and now - last_print < min_interval_seconds:
+            return
+        last_print = now
+        elapsed = now - start_time
+        rate = done / elapsed if elapsed > 0 else 0.0
+        remaining = (total - done) / rate if rate > 0 else float("nan")
+        eta = f", ~{remaining / 60:.1f} min remaining" if rate > 0 else ""
+        # flush=True: stdout is block-buffered (not line-buffered) once
+        # redirected to a file/pipe (e.g. `nohup ... > log.txt`), so without
+        # this these lines would sit invisible in Python's internal buffer
+        # for a long time rather than actually showing up in the log.
+        print(f"[walkforward] {done}/{total} backtests done ({100 * done / total:.1f}%){eta}", flush=True)
+
+    return _callback
+
+
 def cmd_walkforward(args: argparse.Namespace) -> int:
     universe = load_universe()
     strategy = load_strategy(Path(args.config)) if args.config else load_strategy()
     sector_map = load_sector_map()
+    theme_weights = load_themes().get("ai", {})
 
     symbols = args.symbols if args.symbols else universe_symbols(universe)
-    print(f"Fetching prices for {len(symbols)} symbols...")
+    primary_benchmark = strategy["backtest"]["benchmark"]
+    print(f"Fetching prices for {len(symbols)} symbols + benchmark {primary_benchmark}...", flush=True)
     prices = get_universe_prices(symbols, args.start, args.end)
     if not prices:
         print("No price data fetched for any symbol -- aborting.", file=sys.stderr)
         return 1
+    benchmark_prices = get_universe_prices([primary_benchmark], args.start, args.end).get(primary_benchmark)
+
+    fundamentals = None
+    if args.fundamentals:
+        print(f"Fetching fundamentals for {len(symbols)} symbols (coverage will be thin for older dates)...", flush=True)
+        fundamentals = get_universe_fundamentals(symbols)
 
     all_dates = pd.DatetimeIndex(sorted(set().union(*(df.index for df in prices.values()))))
     windows = generate_windows(all_dates, args.train_years, args.test_years, args.step_years)
@@ -120,8 +170,20 @@ def cmd_walkforward(args: argparse.Namespace) -> int:
         with open(args.param_grid) as f:
             param_grid = yaml.safe_load(f)
 
-    print(f"Running walk-forward validation over {len(windows)} window(s)...")
-    results = run_walk_forward(prices, strategy, windows, param_grid=param_grid, sector_map=sector_map)
+    steps_total = total_walkforward_steps(windows, param_grid)
+    combos = steps_total // len(windows) - 1
+    print(f"Running walk-forward validation over {len(windows)} window(s), {combos} config(s) each...", flush=True)
+    results = run_walk_forward(
+        prices,
+        strategy,
+        windows,
+        param_grid=param_grid,
+        sector_map=sector_map,
+        fundamentals=fundamentals,
+        benchmark_prices=benchmark_prices,
+        theme_weights=theme_weights,
+        progress_callback=_cli_progress_printer(),
+    )
 
     with pd.option_context("display.width", 160, "display.max_columns", None):
         print(f"\n{results.to_string(index=False)}")
@@ -162,6 +224,11 @@ def main(argv: list[str] | None = None) -> int:
         "--param-grid",
         default=None,
         help="Path to a YAML file of dotted-config-path -> list of candidate values to grid-search on each train window",
+    )
+    wf.add_argument(
+        "--fundamentals",
+        action="store_true",
+        help="Fetch fundamentals and include value/quality signals (slower; thin coverage on older dates)",
     )
     wf.set_defaults(func=cmd_walkforward)
 

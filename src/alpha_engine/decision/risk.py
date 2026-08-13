@@ -1,6 +1,7 @@
 """Deterministic risk rules evaluated at each rebalance: per-position
-stop-loss and a portfolio-level max-drawdown circuit breaker. Both operate
-purely on realized price/equity history -- no forward-looking or LLM input.
+stop-loss, a portfolio-level max-drawdown circuit breaker, and a
+benchmark trend/regime filter. All operate purely on realized price/equity
+history -- no forward-looking or LLM input.
 """
 from __future__ import annotations
 
@@ -36,3 +37,24 @@ def circuit_breaker_triggered(equity_curve: pd.Series, max_drawdown_pct: float) 
     running_peak = equity_curve.cummax()
     drawdown = (equity_curve / running_peak) - 1.0
     return bool(drawdown.iloc[-1] <= -max_drawdown_pct)
+
+
+def regime_is_risk_on(benchmark_prices: pd.DataFrame, as_of: pd.Timestamp, ma_window: int) -> bool:
+    """Faber-style trend filter: True if the benchmark's close as of
+    `as_of` is above its own trailing `ma_window`-day simple moving
+    average -- i.e. the broad market is in an uptrend and the portfolio
+    should be invested. False means "sit in cash regardless of what
+    individual stock signals say" -- a strategy long individual stocks in
+    a declining broad market has historically fared worse than one that
+    also times broad market exposure.
+
+    Defaults to True (invested) when there's not yet `ma_window` days of
+    benchmark history, rather than blocking the entire early backtest
+    period before a trend judgment is even possible.
+    """
+    hist = benchmark_prices.loc[:as_of]
+    if len(hist) < ma_window:
+        return True
+    sma = hist["close"].iloc[-ma_window:].mean()
+    current = hist["close"].iloc[-1]
+    return bool(current > sma)

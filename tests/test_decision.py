@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -174,3 +175,38 @@ def test_circuit_breaker_triggers_on_drawdown():
 def test_circuit_breaker_not_triggered_within_tolerance():
     equity = pd.Series([100, 120, 110])  # peak 120 -> 110 is ~-8.3%
     assert risk.circuit_breaker_triggered(equity, max_drawdown_pct=0.20) is False
+
+
+def _benchmark_df(closes: list[float]) -> pd.DataFrame:
+    dates = pd.bdate_range("2020-01-01", periods=len(closes))
+    return pd.DataFrame(
+        {"open": closes, "high": closes, "low": closes, "close": closes, "volume": 1_000_000},
+        index=dates,
+    )
+
+
+def test_regime_is_risk_on_true_when_price_above_moving_average():
+    closes = [100.0] * 20 + [150.0]  # sharp jump above its own trailing average
+    df = _benchmark_df(closes)
+    assert risk.regime_is_risk_on(df, as_of=df.index[-1], ma_window=20) is True
+
+
+def test_regime_is_risk_on_false_when_price_below_moving_average():
+    closes = [100.0] * 20 + [50.0]  # sharp drop below its own trailing average
+    df = _benchmark_df(closes)
+    assert risk.regime_is_risk_on(df, as_of=df.index[-1], ma_window=20) is False
+
+
+def test_regime_is_risk_on_defaults_true_with_insufficient_history():
+    closes = [50.0] * 5  # far fewer than ma_window days
+    df = _benchmark_df(closes)
+    assert risk.regime_is_risk_on(df, as_of=df.index[-1], ma_window=20) is True
+
+
+def test_regime_is_risk_on_respects_as_of_no_lookahead():
+    # mild uptrend (clearly above its own trailing MA at as_of), THEN a
+    # crash after as_of -- the crash must not affect the as_of judgment
+    closes = list(np.linspace(100.0, 120.0, 25)) + [10.0] * 5
+    df = _benchmark_df(closes)
+    as_of = df.index[24]  # last day before the crash
+    assert risk.regime_is_risk_on(df, as_of=as_of, ma_window=20) is True

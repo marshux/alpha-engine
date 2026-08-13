@@ -72,3 +72,8 @@ large_caps:
   - NOW
   - ISRG
   - SPGI
+  - SMH   # VanEck Semiconductor ETF -- not an individual stock, but kept
+          # here rather than in sector_etfs (that list is specifically the
+          # 11 GICS sector SPDRs). Added for signals/ai_theme.py exposure.
+  - TSM   # Taiwan Semiconductor -- manufactures the chips powering the AI
+          # buildout (NVDA/AMD/AVGO's designs). Same rationale as SMH.

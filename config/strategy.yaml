@@ -17,12 +17,21 @@ signal_weights:
                       # never supplies a news_ai column (web search can't be
                       # date-scoped to the past, see signals/news_ai.py), so
                       # this weight has no effect on historical backtests
+  ai_theme: 0.15      # deliberate directional tilt toward AI-exposed names
+                      # (config/themes.yaml) -- NOT a backtested academic
+                      # factor like the others, a discretionary bet. Risk is
+                      # capped separately by portfolio.max_theme_weight below,
+                      # not by anything in the signal itself. See
+                      # signals/ai_theme.py.
 
 portfolio:
   top_n: 15                  # number of positions held at any time
   max_position_weight: 0.12  # single-position cap
   max_sector_weight: 0.30    # sector exposure cap (sector ETFs count as their own sector)
-  sizing: volatility_scaled  # volatility_scaled | equal_weight
+  max_theme_weight: 0.35     # hedge: caps total portfolio weight in AI-tagged
+                              # names regardless of how strongly they rank
+                              # (see decision/portfolio.apply_theme_cap)
+  sizing: volatility_scaled  # volatility_scaled | equal_weight | min_variance
 
 risk:
   stop_loss_pct: 0.15        # per-position stop, evaluated at each rebalance
@@ -34,6 +43,15 @@ risk:
                                          # equity (see backtest/engine.py) --
                                          # otherwise the strategy could never
                                          # recover from a frozen pre-crash peak
+
+regime:
+  enabled: true         # Faber-style trend filter: hold equities only when
+                         # the benchmark is above its own trailing moving
+                         # average, otherwise sit in cash -- risk-timing,
+                         # not stock-picking (see decision/risk.py). Needs
+                         # benchmark_prices passed to run_backtest to take
+                         # effect at all (cli.py does this automatically).
+  ma_window_days: 200   # Faber's classic timing-model window
 
 costs:
   commission_bps: 1.0

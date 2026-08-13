@@ -1,0 +1,27 @@
+# Hand-curated thematic tilt signals (currently just "ai"). Unlike
+# sectors.yaml (one GICS sector per symbol, purely for diversification
+# caps), a theme is a deliberate, discretionary bet -- NOT a backtested
+# academic factor like the other signals. Each entry's value is a
+# hand-judged "how core is AI to this business" intensity from 0 to 1,
+# not binary membership: a uniform flag for every member has zero
+# cross-sectional variance and z-scores to nothing (see
+# signals/ai_theme.py). Symbols not listed here are simply absent from
+# the signal -- treated as neutral, never penalized for not being AI.
+#
+# Portfolio-level concentration risk from this tilt is bounded separately
+# by config/strategy.yaml's portfolio.max_theme_weight -- the "hedge" is a
+# cap on how much the bet can dominate the portfolio, not an offsetting
+# position.
+
+ai:
+  NVDA: 1.00   # AI compute IS the business now (data center GPUs)
+  TSM: 0.90    # manufactures the chips powering the entire AI buildout
+  SMH: 0.85    # semiconductor ETF -- basket proxy for the AI hardware supply chain
+  AVGO: 0.85   # custom AI ASICs + networking, alongside a large non-AI business
+  AMD: 0.80    # GPUs/accelerators growing fast, still diversified (CPUs, gaming)
+  MSFT: 0.60   # Azure AI infra, OpenAI stake, Copilot -- large diversified business
+  GOOGL: 0.60  # TPUs, Gemini, DeepMind -- search/ads still dominate revenue
+  ORCL: 0.55   # cloud AI infrastructure buildout, core business is enterprise DB/ERP
+  NOW: 0.55    # AI-powered workflow automation, core business is IT service mgmt
+  CRM: 0.50    # Agentforce AI push, core business is CRM software
+  ADBE: 0.50   # generative AI in creative tools, core business is Creative/Document Cloud

@@ -1,0 +1,35 @@
+# Grid for `alpha-engine walkforward --param-grid config/tuning_grid.yaml`.
+#
+# `signal_weights` here is a set of hand-designed, interpretable weight
+# PROFILES -- not a blind cartesian sweep over each of the 5 weights
+# independently (that combinatorial explosion would itself be a subtle way
+# to overfit against a handful of out-of-sample windows). Each profile is
+# a complete, financially motivated hypothesis. See CLAUDE.md and the
+# README's "How It Works" section for what each factor measures and why.
+
+signal_weights:
+  # balanced: the current config/strategy.yaml defaults -- no single factor
+  # dominates, relies on diversification across uncorrelated factor risk.
+  - {momentum: 0.3, mean_reversion: 0.2, volatility: 0.1, value: 0.15, quality: 0.15, news_ai: 0.1}
+  # momentum_tilt: momentum is the single most-replicated academic factor
+  # -- weight it heavily and see if that alone earns its keep.
+  - {momentum: 0.5, mean_reversion: 0.15, volatility: 0.1, value: 0.1, quality: 0.15, news_ai: 0.0}
+  # quality_value_tilt: fundamentals-driven and defensive -- only matters
+  # when --fundamentals is passed (thin coverage on older backtest dates).
+  - {momentum: 0.15, mean_reversion: 0.1, volatility: 0.1, value: 0.3, quality: 0.35, news_ai: 0.0}
+  # defensive_lowvol: heavy tilt toward the low-volatility anomaly.
+  - {momentum: 0.15, mean_reversion: 0.15, volatility: 0.4, value: 0.15, quality: 0.15, news_ai: 0.0}
+  # equal_weight_factors: no prior about which factor is best -- let
+  # diversification across all 5 do the work.
+  - {momentum: 0.2, mean_reversion: 0.2, volatility: 0.2, value: 0.2, quality: 0.2, news_ai: 0.0}
+  # momentum_quality_barbell: only the two single most-robust academic
+  # factors, nothing else -- a "pure signal" test.
+  - {momentum: 0.4, mean_reversion: 0.0, volatility: 0.0, value: 0.0, quality: 0.6, news_ai: 0.0}
+
+portfolio.sizing: [equal_weight, volatility_scaled, min_variance]
+portfolio.top_n: [10, 15]
+
+# Let walk-forward tell us empirically whether the new regime overlay
+# actually helps out-of-sample, rather than assuming it does because it
+# helped in one manual spot-check.
+regime.enabled: [true, false]

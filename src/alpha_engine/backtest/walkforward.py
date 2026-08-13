@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import itertools
 from dataclasses import dataclass
+from typing import Callable
 
 import pandas as pd
 
@@ -83,12 +84,27 @@ def _grid_combinations(param_grid: dict[str, list] | None) -> list[dict]:
     return [dict(zip(keys, combo)) for combo in itertools.product(*(param_grid[k] for k in keys))]
 
 
+def total_walkforward_steps(windows: list[Window], param_grid: dict[str, list] | None = None) -> int:
+    """Total `run_backtest` calls a `run_walk_forward` call with these
+    `windows`/`param_grid` will make -- one per grid candidate evaluated on
+    each window's train range, plus one test-range eval per window. Public
+    so callers (CLI progress printer, web dashboard) can know the total
+    before the run starts, e.g. to initialize a progress bar at 0/N rather
+    than waiting for the first callback.
+    """
+    return len(windows) * (len(_grid_combinations(param_grid)) + 1)
+
+
 def run_walk_forward(
     prices: dict[str, pd.DataFrame],
     base_config: dict,
     windows: list[Window],
     param_grid: dict[str, list] | None = None,
     sector_map: dict[str, str] | None = None,
+    fundamentals: dict[str, pd.DataFrame] | None = None,
+    benchmark_prices: pd.DataFrame | None = None,
+    theme_weights: dict[str, float] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> pd.DataFrame:
     """One row per window: the config that scored best (by Sharpe) on the
     train sub-range -- or `base_config` unchanged if `param_grid` is
@@ -98,7 +114,27 @@ def run_walk_forward(
     passed through unsliced to every `run_backtest` call; only the
     rebalance-date range changes, so signals never lose lookback history
     at a window boundary (see run_backtest's `start`/`end` docstring).
+
+    `sector_map`, `fundamentals`, `benchmark_prices`, `theme_weights` are
+    passed straight through to every `run_backtest` call (train and test
+    alike) -- same meaning as run_backtest's own params.
+
+    `progress_callback`, if provided: called as `callback(steps_done,
+    steps_total)` after every individual `run_backtest` call (each grid
+    candidate evaluated on a train window, plus each window's test
+    eval) -- a grid sweep across many windows can run for a long time with
+    nothing else to observe progress by, so this is the only signal of
+    forward motion available before the whole thing finishes.
     """
+    steps_total = total_walkforward_steps(windows, param_grid)
+    steps_done = 0
+
+    def _tick() -> None:
+        nonlocal steps_done
+        steps_done += 1
+        if progress_callback is not None:
+            progress_callback(steps_done, steps_total)
+
     rows = []
     for window in windows:
         best_config = base_config
@@ -113,9 +149,13 @@ def run_walk_forward(
                     candidate["signal_weights"],
                     candidate,
                     sector_map=sector_map,
+                    fundamentals=fundamentals,
+                    benchmark_prices=benchmark_prices,
+                    theme_weights=theme_weights,
                     start=window.train_start,
                     end=window.train_end,
                 )
+                _tick()
                 if train_result.equity_curve.empty:
                     continue
                 score = sharpe_ratio(
@@ -129,9 +169,13 @@ def run_walk_forward(
             best_config["signal_weights"],
             best_config,
             sector_map=sector_map,
+            fundamentals=fundamentals,
+            benchmark_prices=benchmark_prices,
+            theme_weights=theme_weights,
             start=window.test_start,
             end=window.test_end,
         )
+        _tick()
         summary = summarize(test_result.equity_curve, None, PERIODS_PER_YEAR[best_config["rebalance"]])
 
         rows.append(
