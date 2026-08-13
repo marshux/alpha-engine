@@ -59,6 +59,15 @@ def test_daily_anomaly_check_calls_execute_anomaly_check(monkeypatch):
     assert calls == ["executed"]
 
 
+def test_daily_equity_snapshot_calls_record_daily_equity_snapshot(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tasks, "record_daily_equity_snapshot", lambda: calls.append("executed"))
+
+    tasks.daily_equity_snapshot()
+
+    assert calls == ["executed"]
+
+
 def _sqlite_session_factory(tmp_path):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -90,6 +99,7 @@ def test_scheduler_registers_paper_rebalance_when_live_trading_enabled(monkeypat
             "weekly_auto_backtest",
             "weekly_paper_rebalance",
             "daily_anomaly_check",
+            "daily_equity_snapshot",
         }
     finally:
         stop_scheduler()

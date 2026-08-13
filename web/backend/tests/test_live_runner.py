@@ -13,8 +13,15 @@ from sqlalchemy.orm import sessionmaker
 from alpha_engine.live.anomaly_guard import AnomalyCheckResult
 from alpha_engine.live.runner import LiveRebalanceResult
 
+from datetime import date
+
 from app.database import Base
-from app.live_runner import execute_anomaly_check, execute_paper_rebalance, get_or_create_paper_trade_run
+from app.live_runner import (
+    execute_anomaly_check,
+    execute_paper_rebalance,
+    get_or_create_paper_trade_run,
+    record_daily_equity_snapshot,
+)
 from app.models import AiUsageEvent, EquityPoint, LiveOrder, Run
 
 
@@ -188,4 +195,56 @@ def test_execute_paper_rebalance_skip_is_a_noop(session_factory, monkeypatch):
     db = session_factory()
     assert db.query(EquityPoint).filter_by(run_id=run_id).count() == 0
     assert db.query(LiveOrder).filter_by(run_id=run_id).count() == 0
+    db.close()
+
+
+def test_record_daily_equity_snapshot_creates_a_point(session_factory, monkeypatch):
+    monkeypatch.setattr("app.live_runner.broker.get_client", lambda: object())
+    monkeypatch.setattr("app.live_runner.broker.get_account", lambda client: {"equity": 101_234.5})
+
+    record_daily_equity_snapshot(session_factory=session_factory)
+
+    db = session_factory()
+    run = db.query(Run).filter_by(run_type="paper_trade").one()
+    points = db.query(EquityPoint).filter_by(run_id=run.id).all()
+    assert len(points) == 1
+    assert points[0].date == date.today().isoformat()
+    assert points[0].equity == 101_234.5
+    db.close()
+
+
+def test_record_daily_equity_snapshot_is_a_noop_if_todays_point_exists(session_factory, monkeypatch):
+    db = session_factory()
+    run = get_or_create_paper_trade_run(db)
+    run_id = run.id
+    db.add(EquityPoint(run_id=run_id, date=date.today().isoformat(), equity=99_000.0))
+    db.commit()
+    db.close()
+
+    def _fail_if_called():
+        raise AssertionError("broker.get_client must not be called when today's point already exists")
+
+    monkeypatch.setattr("app.live_runner.broker.get_client", _fail_if_called)
+
+    record_daily_equity_snapshot(session_factory=session_factory)
+
+    db = session_factory()
+    points = db.query(EquityPoint).filter_by(run_id=run_id).all()
+    assert len(points) == 1
+    assert points[0].equity == 99_000.0  # untouched
+    db.close()
+
+
+def test_record_daily_equity_snapshot_swallows_broker_errors(session_factory, monkeypatch):
+    def _raise():
+        raise RuntimeError("Alpaca is down")
+
+    monkeypatch.setattr("app.live_runner.broker.get_client", _raise)
+
+    record_daily_equity_snapshot(session_factory=session_factory)  # must not raise
+
+    db = session_factory()
+    run = db.query(Run).filter_by(run_type="paper_trade").one()
+    assert run.error_message is None  # reserved for trading failures, not this
+    assert db.query(EquityPoint).filter_by(run_id=run.id).count() == 0
     db.close()

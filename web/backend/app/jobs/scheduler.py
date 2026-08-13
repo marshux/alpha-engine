@@ -17,7 +17,13 @@ import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.jobs.tasks import daily_anomaly_check, nightly_cache_refresh, weekly_auto_backtest, weekly_paper_rebalance
+from app.jobs.tasks import (
+    daily_anomaly_check,
+    daily_equity_snapshot,
+    nightly_cache_refresh,
+    weekly_auto_backtest,
+    weekly_paper_rebalance,
+)
 
 scheduler = BackgroundScheduler()
 
@@ -62,6 +68,16 @@ def start_scheduler() -> None:
             daily_anomaly_check,
             CronTrigger(day_of_week="mon-fri", hour=2, minute=30),
             id="daily_anomaly_check",
+            replace_existing=True,
+        )
+        # 10 minutes after daily_anomaly_check so a same-day forced sell is
+        # already reflected in the snapshotted equity -- gives the
+        # dashboard's equity curve daily resolution instead of only one
+        # point per weekly rebalance.
+        scheduler.add_job(
+            daily_equity_snapshot,
+            CronTrigger(day_of_week="mon-fri", hour=2, minute=40),
+            id="daily_equity_snapshot",
             replace_existing=True,
         )
     scheduler.start()

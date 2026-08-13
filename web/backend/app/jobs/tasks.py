@@ -11,7 +11,7 @@ from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.data.fundamentals import get_universe_fundamentals
 
 from app.database import SessionLocal
-from app.live_runner import execute_anomaly_check, execute_paper_rebalance
+from app.live_runner import execute_anomaly_check, execute_paper_rebalance, record_daily_equity_snapshot
 from app.models import Run
 from app.runner import execute_run
 from app.schemas import RunCreateRequest
@@ -88,3 +88,14 @@ def daily_anomaly_check() -> None:
     same gate as weekly_paper_rebalance (real account interaction).
     """
     execute_anomaly_check()
+
+
+def daily_equity_snapshot() -> None:
+    """Records today's real Alpaca account equity so the dashboard's
+    equity curve has daily resolution rather than only one point per
+    weekly rebalance -- lets the /live page render day-to-day change and
+    color-code the ranges between rebalances. A read of the account, not
+    a trading action; registered alongside daily_anomaly_check under the
+    same ENABLE_LIVE_TRADING gate purely because it also calls Alpaca.
+    """
+    record_daily_equity_snapshot()

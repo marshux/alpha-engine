@@ -197,6 +197,35 @@ def test_benchmark_pnl_computed_from_same_baseline_as_strategy_pnl(authed_client
     assert by_symbol["VTI"]["pnl_pct"] == pytest.approx(0.0)
 
 
+def test_benchmark_pnl_widens_fetch_range_when_baseline_is_today(authed_client, db_session, monkeypatch):
+    # Regression: yfinance's `end` is exclusive, so a session started
+    # today (baseline.date == today) would fetch a zero-width start==end
+    # range and silently return no benchmarks at all if the route passed
+    # today's date straight through as `end`.
+    import datetime as dt
+
+    today_str = dt.date.today().isoformat()
+    run = live_routes.get_or_create_paper_trade_run(db_session)
+    db_session.add(EquityPoint(run_id=run.id, date=today_str, equity=100_000.0))
+    db_session.commit()
+
+    def fake_prices(symbols, start, end):
+        assert start == today_str
+        assert end != today_str  # widened past the exclusive-end trap
+        return {
+            symbol: pd.DataFrame({"close": [400.0, 404.0]}, index=pd.to_datetime([today_str, today_str]))
+            for symbol in symbols
+        }
+
+    monkeypatch.setattr(live_routes, "get_universe_prices", fake_prices)
+    monkeypatch.setattr(live_routes, "load_universe", lambda: {"benchmarks": ["SPY"]})
+
+    response = authed_client.get("/api/live/benchmark-pnl")
+
+    assert response.status_code == 200
+    assert len(response.json()["benchmarks"]) == 1
+
+
 def test_flatten_requires_auth(client):
     response = client.post("/api/live/flatten")
     assert response.status_code == 401

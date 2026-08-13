@@ -3,6 +3,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceArea,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -16,7 +17,53 @@ import type { AiUsageSummary, BenchmarkPnl, LiveAccount, RunDetail } from "../ty
 
 const POSITIONS_POLL_MS = 10_000;
 const STRATEGY_COLOR = "#34d399";
+const REBALANCE_BAND_COLORS = ["rgba(52, 211, 153, 0.05)", "rgba(148, 163, 184, 0.05)"];
 const PAGE_SIZE = 10;
+
+interface EquityRow {
+  date: string;
+  strategy?: number;
+}
+
+interface EquityTooltipPayloadEntry {
+  dataKey?: unknown;
+  value?: unknown;
+  color?: string;
+}
+
+interface EquityTooltipProps {
+  active?: boolean;
+  label?: string | number;
+  payload?: readonly EquityTooltipPayloadEntry[];
+  data: EquityRow[];
+}
+
+function EquityTooltip({ active, payload, label, data }: EquityTooltipProps) {
+  if (!active || !payload || payload.length === 0 || label === undefined) return null;
+  const idx = data.findIndex((d) => d.date === String(label));
+  const prevStrategy = idx > 0 ? data[idx - 1].strategy : undefined;
+  const currentStrategy = data[idx]?.strategy;
+  const hasChange = typeof currentStrategy === "number" && typeof prevStrategy === "number" && prevStrategy !== 0;
+  const change = hasChange ? currentStrategy! - prevStrategy! : null;
+  const changePct = hasChange ? change! / prevStrategy! : null;
+
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-950 p-2 text-xs">
+      <div className="mb-1 text-slate-400">{label}</div>
+      {payload.map((p) => (
+        <div key={String(p.dataKey)} style={{ color: p.color }}>
+          {String(p.dataKey)}: {currency(typeof p.value === "number" ? p.value : null)}
+        </div>
+      ))}
+      {change !== null && (
+        <div className={`mt-1 border-t border-slate-800 pt-1 ${change >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+          {change >= 0 ? "+" : ""}
+          {currency(change)} ({changePct !== null ? pct(changePct) : "--"}) vs. prior day
+        </div>
+      )}
+    </div>
+  );
+}
 
 function MetricTile({ label, value }: { label: string; value: string }) {
   return (
@@ -145,6 +192,19 @@ export function LiveTrading() {
   if (session === null || account === null) return <p className="text-slate-400">Loading...</p>;
 
   const equityData = session.equity_points.length > 0 ? buildEquityChartData(session) : [];
+
+  // Alternating background bands, one per rebalance -> next-rebalance
+  // range, so the chart visually groups each period's day-to-day wiggle
+  // under a distinct backdrop instead of it all blending together.
+  const rebalanceDates = Array.from(
+    new Set(session.live_orders.filter((o) => o.trigger === "rebalance").map((o) => o.date))
+  ).sort();
+  const lastEquityDate = equityData.length > 0 ? equityData[equityData.length - 1].date : undefined;
+  const rebalanceBands = rebalanceDates.map((start, i) => ({
+    start,
+    end: rebalanceDates[i + 1] ?? lastEquityDate ?? start,
+    color: REBALANCE_BAND_COLORS[i % REBALANCE_BAND_COLORS.length],
+  }));
 
   // Baseline is the earliest recorded equity point (the account's equity
   // right after the first rebalance, before which no capital had been
@@ -275,13 +335,19 @@ export function LiveTrading() {
 
       {equityData.length > 0 && (
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <h2 className="mb-3 text-sm font-medium text-slate-300">Equity curve (per rebalance)</h2>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-1">
+            <h2 className="text-sm font-medium text-slate-300">Equity curve (daily)</h2>
+            <span className="text-xs text-slate-500">shaded bands = one rebalance period each</span>
+          </div>
           <ResponsiveContainer width="100%" height={280}>
             <LineChart data={equityData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+              {rebalanceBands.map((band) => (
+                <ReferenceArea key={band.start} x1={band.start} x2={band.end} fill={band.color} strokeOpacity={0} />
+              ))}
               <XAxis dataKey="date" stroke="#64748b" tick={{ fontSize: 11 }} minTickGap={40} />
               <YAxis stroke="#64748b" tick={{ fontSize: 11 }} width={70} />
-              <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b" }} />
+              <Tooltip content={(props) => <EquityTooltip {...props} data={equityData} />} />
               <Line type="monotone" dataKey="strategy" stroke={STRATEGY_COLOR} dot={false} strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>

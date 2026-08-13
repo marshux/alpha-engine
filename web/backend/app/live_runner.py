@@ -6,9 +6,11 @@ Run.status="active" and models.py::LiveOrder's docstrings for why.
 """
 from __future__ import annotations
 
+import logging
 import traceback
 from datetime import date
 
+from alpha_engine.broker import alpaca as broker
 from alpha_engine.live.anomaly_guard import run_anomaly_check
 from alpha_engine.live.runner import run_live_rebalance
 from sqlalchemy import select
@@ -17,6 +19,8 @@ from app.database import SessionLocal
 from app.models import AiUsageEvent, EquityPoint, LiveOrder, Run
 
 PAPER_TRADE_RUN_TYPE = "paper_trade"
+
+logger = logging.getLogger(__name__)
 
 
 def get_or_create_paper_trade_run(db) -> Run:
@@ -100,6 +104,35 @@ def execute_paper_rebalance(session_factory=SessionLocal) -> None:
                     web_search_requests=result.ai_usage["web_search_requests"],
                 )
             )
+        db.commit()
+    finally:
+        db.close()
+
+
+def record_daily_equity_snapshot(session_factory=SessionLocal) -> None:
+    """Records today's real Alpaca account equity as an EquityPoint even
+    on days with no rebalance and nothing flagged by the anomaly guard --
+    gives the dashboard's equity curve daily resolution instead of only
+    one point per weekly rebalance. Idempotent per day (a rebalance may
+    have already recorded today's point; this is a no-op if so). A read
+    of a public/paper account, not a trading action -- failures are
+    logged, not surfaced on Run.error_message (that field is reserved for
+    failures that affect trading itself), so a transient outage here
+    never puts a false alarm on the dashboard.
+    """
+    db = session_factory()
+    try:
+        run = get_or_create_paper_trade_run(db)
+        today_str = date.today().isoformat()
+        existing = db.query(EquityPoint).filter_by(run_id=run.id, date=today_str).first()
+        if existing is not None:
+            return
+        try:
+            account = broker.get_account(broker.get_client())
+        except Exception:
+            logger.warning("Daily equity snapshot failed: %s", traceback.format_exc())
+            return
+        db.add(EquityPoint(run_id=run.id, date=today_str, equity=account["equity"]))
         db.commit()
     finally:
         db.close()

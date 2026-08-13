@@ -5,7 +5,7 @@ persisted), starting a session, triggering a manual rebalance, and the
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -132,7 +132,12 @@ def get_benchmark_pnl(db: Session = Depends(get_db)) -> BenchmarkPnlOut:
 
     universe = load_universe()
     benchmark_symbols = universe.get("benchmarks") or ["SPY", "VOO", "VTI"]
-    prices = get_universe_prices(benchmark_symbols, baseline.date, date.today().isoformat())
+    # yfinance's `end` is exclusive -- a session started today has
+    # baseline.date == today, so start==end would fetch zero rows and
+    # silently drop every symbol. +1 day guarantees today's close (if the
+    # market's open) is actually included.
+    fetch_end = (date.today() + timedelta(days=1)).isoformat()
+    prices = get_universe_prices(benchmark_symbols, baseline.date, fetch_end)
 
     benchmarks = []
     for symbol in benchmark_symbols:
