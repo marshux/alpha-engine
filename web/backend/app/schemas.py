@@ -65,6 +65,30 @@ class BenchmarkPnlOut(BaseModel):
     benchmarks: list[BenchmarkPnlEntry]
 
 
+class StrategyOut(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    description: str
+    risk_tier: str
+    enabled: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StrategySummaryOut(StrategyOut):
+    """For the main /live list view. `equity`/`total_pnl_*` come from the
+    strategy's Run's persisted EquityPoint history (cheap), not a live
+    Alpaca call per row -- keeps the list fast even with several
+    strategies. None fields mean the strategy has no rebalance yet.
+    """
+
+    run_id: int | None
+    status: str | None
+    equity: float | None
+    total_pnl_usd: float | None
+    total_pnl_pct: float | None
+
+
 class WalkForwardWindowOut(BaseModel):
     window_index: int
     train_start: str

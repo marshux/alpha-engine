@@ -21,6 +21,7 @@ from app.routes import auth as auth_routes
 from app.routes import live as live_routes
 from app.routes import public as public_routes
 from app.routes import runs as runs_routes
+from app.routes import strategies as strategies_routes
 
 SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "dev-only-insecure-key-override-in-production")
 # The Dockerfile builds web/frontend and copies its `dist/` output here.
@@ -51,6 +52,7 @@ app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, same_site="
 app.include_router(auth_routes.router)
 app.include_router(runs_routes.router)
 app.include_router(public_routes.router)
+app.include_router(strategies_routes.router)
 app.include_router(live_routes.router)
 
 

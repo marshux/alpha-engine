@@ -8,11 +8,11 @@ from alpha_engine.backtest.engine import PERIODS_PER_YEAR, run_backtest
 from alpha_engine.backtest.metrics import sharpe_ratio
 from alpha_engine.backtest.walkforward import (
     Window,
-    _apply_overrides,
     _grid_combinations,
     generate_windows,
     run_walk_forward,
 )
+from alpha_engine.config import apply_overrides
 
 
 def _series_df(closes: np.ndarray, n_days: int) -> pd.DataFrame:
@@ -70,7 +70,7 @@ def test_generate_windows_empty_when_range_too_short():
 
 def test_apply_overrides_sets_nested_path_without_mutating_base():
     base = {"portfolio": {"top_n": 15}, "signal_weights": {"momentum": 0.4}}
-    result = _apply_overrides(base, {"portfolio.top_n": 5, "signal_weights.momentum": 0.9})
+    result = apply_overrides(base, {"portfolio.top_n": 5, "signal_weights.momentum": 0.9})
 
     assert result["portfolio"]["top_n"] == 5
     assert result["signal_weights"]["momentum"] == 0.9
@@ -139,7 +139,7 @@ def test_run_walk_forward_grid_search_picks_higher_train_sharpe_config():
     for i, window in enumerate(windows):
         scores = {}
         for momentum_weight in momentum_candidates:
-            candidate = _apply_overrides(config, {"signal_weights.momentum": momentum_weight})
+            candidate = apply_overrides(config, {"signal_weights.momentum": momentum_weight})
             train_result = run_backtest(
                 prices,
                 candidate["signal_weights"],

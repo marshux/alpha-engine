@@ -1,6 +1,7 @@
 """Loaders for the YAML config files under config/ (universe, strategy, sectors, themes)."""
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import yaml
@@ -35,3 +36,22 @@ def universe_symbols(universe: dict, include_benchmarks: bool = False) -> list[s
     if include_benchmarks:
         symbols += list(universe.get("benchmarks", []))
     return symbols
+
+
+def apply_overrides(base_config: dict, overrides: dict[str, object]) -> dict:
+    """`overrides`: dotted-path -> value, e.g. {"portfolio.top_n": 10}.
+    Returns a deep copy of `base_config` with each path set; never mutates
+    `base_config`. Shared by backtest/walkforward.py's grid search and
+    live/runner.py's per-strategy config overrides (see live/runner.py and
+    web/backend/app/models.py::Strategy.config_overrides_json) -- one
+    dotted-override mechanism for both backtest tuning and live strategy
+    variants.
+    """
+    config = copy.deepcopy(base_config)
+    for path, value in overrides.items():
+        *parents, leaf = path.split(".")
+        node = config
+        for key in parents:
+            node = node[key]
+        node[leaf] = value
+    return config

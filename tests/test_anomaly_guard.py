@@ -133,3 +133,28 @@ def test_strategy_config_thresholds_are_passed_through(monkeypatch):
     anomaly_guard.run_anomaly_check(broker_client=object())
 
     assert captured == {"z_threshold": 2.5, "lookback_days": 30}
+
+
+def test_strategy_overrides_apply_on_top_of_loaded_config(monkeypatch):
+    _patch_config(monkeypatch)  # base: z_threshold=3.0, lookback_days=60
+    _patch_prices(monkeypatch)
+    monkeypatch.setattr(
+        anomaly_guard.broker,
+        "get_positions",
+        lambda client: {"AAPL": {"qty": 10.0, "avg_entry_price": 100.0, "market_value": 850.0}},
+    )
+
+    captured = {}
+
+    def _capture(prices, symbols, as_of, z_threshold, lookback_days):
+        captured["z_threshold"] = z_threshold
+        captured["lookback_days"] = lookback_days
+        return set()
+
+    monkeypatch.setattr(anomaly_guard, "anomalous_drop_positions", _capture)
+
+    anomaly_guard.run_anomaly_check(
+        broker_client=object(), strategy_overrides={"risk.anomaly_z_threshold": 1.5}
+    )
+
+    assert captured == {"z_threshold": 1.5, "lookback_days": 60}  # only the overridden key changed

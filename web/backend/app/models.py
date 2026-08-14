@@ -11,6 +11,52 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+class Strategy(Base):
+    """A distinct live paper-trading strategy: its own real Alpaca paper
+    account (no position collisions between strategies -- each trades an
+    independently funded account), its own config overrides, its own
+    persisted circuit-breaker state file, and its own `Run` row (see
+    `Run.strategy_id`). Everything about *how* a strategy differs from
+    another lives here as data, not code -- the same alpha_engine
+    execution stack (broker/alpaca.py, live/runner.py,
+    live/anomaly_guard.py) runs unchanged for every strategy.
+    """
+
+    __tablename__ = "strategies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, index=True)  # slug, e.g. "sector_rotation"
+    display_name: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(Text)
+    risk_tier: Mapped[str] = mapped_column(String)  # e.g. "traditional" | "aggressive", for UI badges
+
+    # Dotted-path -> value, applied on top of config/strategy.yaml via
+    # alpha_engine.config.apply_overrides (see live/runner.py). e.g.
+    # {"signal_weights.momentum": 1.0, "portfolio.top_n": 4}.
+    config_overrides_json: Mapped[str] = mapped_column(Text)
+    # Nullable: null means "trade the full configured universe" (most
+    # strategies); a JSON list of symbols restricts to just those (e.g.
+    # Sector Rotation's 11 SPDR sector ETFs). Passed through as
+    # live/runner.py::run_live_rebalance's `symbols_override`.
+    universe_symbols_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # NAMES of the Fly-secret env vars holding this strategy's Alpaca
+    # credentials (e.g. "ALPACA_API_KEY_SECTOR_ROTATION") -- never the
+    # secrets themselves. The DB stays out of the secrets business, same
+    # as every other credential in this project.
+    alpaca_key_env: Mapped[str] = mapped_column(String)
+    alpaca_secret_env: Mapped[str] = mapped_column(String)
+
+    # Per-strategy on/off, ANDed with the global ENABLE_LIVE_TRADING kill
+    # switch in jobs/scheduler.py -- lets a strategy be created and
+    # backfilled with history before its scheduled automation is trusted.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    runs: Mapped[list["Run"]] = relationship(back_populates="strategy")
+
+
 class Run(Base):
     __tablename__ = "runs"
 
@@ -19,6 +65,9 @@ class Run(Base):
     # so a future "live_session" type (see CLAUDE.md's live-trading
     # extension note) doesn't need a schema migration.
     run_type: Mapped[str] = mapped_column(String, index=True)
+    # Set only for run_type="paper_trade" -- backtest/walkforward runs
+    # aren't tied to any one strategy.
+    strategy_id: Mapped[int | None] = mapped_column(ForeignKey("strategies.id"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String, default="pending", index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -75,6 +124,7 @@ class Run(Base):
     live_orders: Mapped[list["LiveOrder"]] = relationship(
         back_populates="run", cascade="all, delete-orphan", order_by="LiveOrder.id"
     )
+    strategy: Mapped[Strategy | None] = relationship(back_populates="runs")
 
 
 class EquityPoint(Base):
@@ -162,6 +212,10 @@ class AiUsageEvent(Base):
     __tablename__ = "ai_usage_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Nullable for backward compatibility with rows recorded before
+    # multi-strategy support (a single global cost ledger, unscoped) --
+    # every row recorded from here on always sets it.
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
     date: Mapped[str] = mapped_column(String, index=True)
     source: Mapped[str] = mapped_column(String)  # e.g. "news_ai_sentiment"
     input_tokens: Mapped[int] = mapped_column(Integer)

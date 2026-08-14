@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import {
   CartesianGrid,
   Line,
@@ -13,7 +14,7 @@ import { api, ApiError } from "../api";
 import { buildEquityChartData } from "../chartData";
 import { Pagination, usePagination } from "../components/Pagination";
 import { currency, num, pct } from "../format";
-import type { AiUsageSummary, BenchmarkPnl, LiveAccount, RunDetail } from "../types";
+import type { AiUsageSummary, BenchmarkPnl, LiveAccount, RunDetail, Strategy } from "../types";
 
 const POSITIONS_POLL_MS = 10_000;
 const STRATEGY_COLOR = "#34d399";
@@ -75,6 +76,10 @@ function MetricTile({ label, value }: { label: string; value: string }) {
 }
 
 export function LiveTrading() {
+  const { strategyId: strategyIdParam } = useParams<{ strategyId: string }>();
+  const strategyId = Number(strategyIdParam);
+
+  const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [session, setSession] = useState<RunDetail | null>(null);
   const [account, setAccount] = useState<LiveAccount | null>(null);
   const [aiUsage, setAiUsage] = useState<AiUsageSummary | null>(null);
@@ -85,13 +90,13 @@ export function LiveTrading() {
 
   const loadPositions = () => {
     api
-      .getLivePositions()
+      .getLivePositions(strategyId)
       .then(setAccount)
       .catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
   };
 
   const loadSession = async () => {
-    const summary = await api.startPaperTrading(); // idempotent get-or-create
+    const summary = await api.startPaperTrading(strategyId); // idempotent get-or-create
     const detail = await api.getRun(summary.id);
     setSession(detail);
   };
@@ -101,7 +106,7 @@ export function LiveTrading() {
     // actions that could trigger a fresh news_ai call, not on the 10s
     // positions poll.
     api
-      .getAiUsage()
+      .getAiUsage(strategyId)
       .then(setAiUsage)
       .catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
   };
@@ -111,12 +116,26 @@ export function LiveTrading() {
     // baseline only moves on a rebalance, and benchmark closes are daily,
     // not worth refetching on the 10s positions poll.
     api
-      .getBenchmarkPnl()
+      .getBenchmarkPnl(strategyId)
       .then(setBenchmarkPnl)
       .catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
   };
 
   useEffect(() => {
+    // Reset stale state from a previously viewed strategy before loading
+    // the new one -- otherwise switching strategies via the URL briefly
+    // shows the old strategy's data under the new one's header.
+    setStrategy(null);
+    setSession(null);
+    setAccount(null);
+    setAiUsage(null);
+    setBenchmarkPnl(null);
+    setError(null);
+
+    api
+      .getStrategy(strategyId)
+      .then(setStrategy)
+      .catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
     loadSession().catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
     loadPositions();
     loadAiUsage();
@@ -125,13 +144,13 @@ export function LiveTrading() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, []);
+  }, [strategyId]);
 
   const handleRebalanceNow = async () => {
     setActionPending("rebalance");
     setError(null);
     try {
-      await api.rebalanceNow();
+      await api.rebalanceNow(strategyId);
       // The rebalance runs in the background (can take up to ~a couple
       // minutes -- real Alpaca + Anthropic calls) -- refresh once now for
       // immediate feedback if it was fast, the regular poll picks up the
@@ -153,7 +172,7 @@ export function LiveTrading() {
     setActionPending("anomaly-check");
     setError(null);
     try {
-      await api.checkAnomaliesNow();
+      await api.checkAnomaliesNow(strategyId);
       setTimeout(() => {
         loadPositions();
         loadSession();
@@ -172,7 +191,7 @@ export function LiveTrading() {
     setActionPending("flatten");
     setError(null);
     try {
-      await api.flattenToCash();
+      await api.flattenToCash(strategyId);
       setTimeout(loadPositions, 2000);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -219,9 +238,19 @@ export function LiveTrading() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Paper trading</h1>
+          <Link to="/live" className="text-xs text-slate-500 hover:text-slate-300">
+            &larr; All strategies
+          </Link>
+          <div className="mt-1 flex items-center gap-2">
+            <h1 className="text-2xl font-semibold">{strategy?.display_name ?? "Paper trading"}</h1>
+            {strategy && (
+              <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs font-medium capitalize text-slate-300">
+                {strategy.risk_tier}
+              </span>
+            )}
+          </div>
           <p className="text-sm text-slate-400">
-            Session started {session.start_date} -- Alpaca paper account
+            {strategy?.description ?? `Session started ${session.start_date}`} -- Alpaca paper account
           </p>
         </div>
         <div className="flex gap-2">

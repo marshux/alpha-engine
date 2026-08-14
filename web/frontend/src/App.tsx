@@ -9,6 +9,7 @@ import { PublicRunDetail } from "./pages/PublicRunDetail";
 import { PublicRunHistory } from "./pages/PublicRunHistory";
 import { RunDetail } from "./pages/RunDetail";
 import { RunHistory } from "./pages/RunHistory";
+import { Strategies } from "./pages/Strategies";
 
 export default function App() {
   return (
@@ -29,7 +30,8 @@ export default function App() {
           <Route path="/" element={<RunHistory />} />
           <Route path="/runs/new" element={<NewRun />} />
           <Route path="/runs/:id" element={<RunDetail />} />
-          <Route path="/live" element={<LiveTrading />} />
+          <Route path="/live" element={<Strategies />} />
+          <Route path="/live/:strategyId" element={<LiveTrading />} />
         </Route>
       </Routes>
     </AuthProvider>

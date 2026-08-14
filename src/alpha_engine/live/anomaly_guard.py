@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from alpha_engine.broker import alpaca as broker
-from alpha_engine.config import load_strategy
+from alpha_engine.config import apply_overrides, load_strategy
 from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.decision.risk import anomalous_drop_positions
 
@@ -48,14 +48,21 @@ def run_anomaly_check(
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
     broker_client=None,
+    strategy_overrides: dict[str, object] | None = None,
 ) -> AnomalyCheckResult:
     """`broker_client`/`dry_run` follow the same conventions as
     live/runner.py::run_live_rebalance -- tests pass a mock client instead
     of monkeypatching module internals, `dry_run` computes what would be
     sold without submitting it.
+
+    `strategy_overrides`: same dotted-path mechanism as run_live_rebalance
+    -- a strategy's `risk.anomaly_z_threshold`/`risk.anomaly_lookback_days`
+    are just more entries in its config_overrides_json, no special-casing.
     """
     as_of = as_of or pd.Timestamp.now().normalize()
     strategy = load_strategy()
+    if strategy_overrides:
+        strategy = apply_overrides(strategy, strategy_overrides)
     risk_cfg = strategy.get("risk", {})
     z_threshold = risk_cfg.get("anomaly_z_threshold", DEFAULT_Z_THRESHOLD)
     lookback_days = risk_cfg.get("anomaly_lookback_days", DEFAULT_LOOKBACK_DAYS)

@@ -40,7 +40,14 @@ from pathlib import Path
 import pandas as pd
 
 from alpha_engine.broker import alpaca as broker
-from alpha_engine.config import load_sector_map, load_strategy, load_themes, load_universe, universe_symbols
+from alpha_engine.config import (
+    apply_overrides,
+    load_sector_map,
+    load_strategy,
+    load_themes,
+    load_universe,
+    universe_symbols,
+)
 from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.data.fundamentals import get_universe_fundamentals
 from alpha_engine.decision.portfolio import build_portfolio, modulate_theme_cap
@@ -93,6 +100,8 @@ def run_live_rebalance(
     as_of: pd.Timestamp | None = None,
     broker_client=None,
     state_path: Path | None = None,
+    strategy_overrides: dict[str, object] | None = None,
+    symbols_override: list[str] | None = None,
 ) -> LiveRebalanceResult:
     """`broker_client`, if provided: an already-constructed alpaca-py
     `TradingClient` (tests pass a mock here instead of monkeypatching
@@ -104,6 +113,19 @@ def run_live_rebalance(
     `data/live_state.json`) -- tests always pass a tmp path here instead,
     the same way web/backend/app/runner.py's `execute_run` takes a
     `session_factory` param so tests never touch real persisted state.
+
+    `strategy_overrides`, if provided: dotted-path -> value overrides
+    applied on top of the loaded config/strategy.yaml via
+    config.py::apply_overrides -- the same mechanism backtest/
+    walkforward.py's grid search uses, now also driving distinct live
+    strategy variants (see web/backend/app/models.py::Strategy).
+
+    `symbols_override`, if provided: trade only these symbols instead of
+    the full configured universe (e.g. a sector-rotation strategy
+    restricted to sector ETFs). AI-theme signal/sentiment scope
+    (`theme_weights` below) is filtered down to symbols actually in play
+    so a strategy whose universe has no theme-tagged names never pays for
+    a sentiment call that couldn't affect it either way.
     """
     as_of = as_of or pd.Timestamp.now().normalize()
     today_str = as_of.date().isoformat()
@@ -115,15 +137,17 @@ def run_live_rebalance(
         return LiveRebalanceResult(skipped_reason="already ran today")
 
     strategy = load_strategy()
+    if strategy_overrides:
+        strategy = apply_overrides(strategy, strategy_overrides)
     universe = load_universe()
     sector_map = load_sector_map()
-    theme_weights = load_themes().get("ai", {})
     signal_weights = strategy["signal_weights"]
     portfolio_cfg = strategy["portfolio"]
     risk_cfg = strategy["risk"]
     regime_cfg = strategy.get("regime", {})
 
-    symbols = universe_symbols(universe)
+    symbols = symbols_override if symbols_override is not None else universe_symbols(universe)
+    theme_weights = {s: w for s, w in load_themes().get("ai", {}).items() if s in symbols}
     primary_benchmark = strategy["backtest"]["benchmark"]
     benchmark_symbols = universe.get("benchmarks") or [primary_benchmark]
 

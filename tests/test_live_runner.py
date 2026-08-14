@@ -211,6 +211,70 @@ def test_ai_usage_is_none_when_sentiment_call_is_a_cache_hit(tmp_path, monkeypat
     assert result.ai_usage is None
 
 
+def test_strategy_overrides_change_portfolio_config(tmp_path, monkeypatch):
+    _patch_config(monkeypatch)
+    _patch_data_fetches(monkeypatch)
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(getattr(runner, name), "compute", lambda *a, **k: pd.Series({"AAPL": 1.0, "MSFT": 0.5}))
+    _patch_neutral_sentiment(monkeypatch)
+
+    captured_configs = []
+    real_build_portfolio = runner.build_portfolio
+
+    def _tracked_build_portfolio(*args, **kwargs):
+        captured_configs.append(kwargs.get("config"))
+        return real_build_portfolio(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "build_portfolio", _tracked_build_portfolio)
+    monkeypatch.setattr(runner.broker, "get_account", lambda client: {"equity": 100_000.0, "cash": 100_000.0, "buying_power": 100_000.0})
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    runner.run_live_rebalance(
+        dry_run=True,
+        state_path=tmp_path / "live_state.json",
+        broker_client=object(),
+        strategy_overrides={"portfolio.top_n": 1},
+    )
+
+    assert captured_configs[0]["top_n"] == 1  # overridden from the fixture's default of 2
+
+
+def test_symbols_override_restricts_universe_and_skips_irrelevant_sentiment_call(tmp_path, monkeypatch):
+    # Fixture universe is AAPL+MSFT, and only AAPL is theme-tagged
+    # (_patch_config's load_themes stub). Restricting to just MSFT should
+    # both narrow the price fetch and skip the (real-money) AI sentiment
+    # call entirely, since no theme-tagged symbol remains in scope.
+    _patch_config(monkeypatch)
+
+    price_calls = []
+
+    def fake_prices(symbols, start, end):
+        price_calls.append(list(symbols))
+        return {s: _series_df(100.0) for s in symbols} | {"SPY": _series_df(400.0)}
+
+    monkeypatch.setattr(runner, "get_universe_prices", fake_prices)
+    monkeypatch.setattr(runner, "get_universe_fundamentals", lambda symbols: {})
+
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(getattr(runner, name), "compute", lambda *a, **k: pd.Series({"MSFT": 1.0}))
+
+    sentiment_calls = []
+    _patch_neutral_sentiment(monkeypatch, sentiment_calls)
+
+    monkeypatch.setattr(runner.broker, "get_account", lambda client: {"equity": 100_000.0, "cash": 100_000.0, "buying_power": 100_000.0})
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    runner.run_live_rebalance(
+        dry_run=True,
+        state_path=tmp_path / "live_state.json",
+        broker_client=object(),
+        symbols_override=["MSFT"],
+    )
+
+    assert price_calls[0] == ["MSFT"]
+    assert sentiment_calls == []
+
+
 def test_dry_run_never_submits_orders(tmp_path, monkeypatch):
     _patch_config(monkeypatch)
     _patch_data_fetches(monkeypatch)

@@ -6,7 +6,6 @@ one specific historical period" -- a single full-period backtest can't.
 """
 from __future__ import annotations
 
-import copy
 import itertools
 from dataclasses import dataclass
 from typing import Callable
@@ -15,6 +14,7 @@ import pandas as pd
 
 from alpha_engine.backtest.engine import PERIODS_PER_YEAR, run_backtest
 from alpha_engine.backtest.metrics import sharpe_ratio, summarize
+from alpha_engine.config import apply_overrides
 
 
 @dataclass
@@ -60,21 +60,6 @@ def generate_windows(
         windows.append(Window(train_start, train_end, test_start, test_end))
         train_start = train_start + step_span
     return windows
-
-
-def _apply_overrides(base_config: dict, overrides: dict[str, object]) -> dict:
-    """`overrides`: dotted-path -> value, e.g. {"portfolio.top_n": 10}.
-    Returns a deep copy of `base_config` with each path set; never mutates
-    `base_config` (each grid candidate needs its own independent config).
-    """
-    config = copy.deepcopy(base_config)
-    for path, value in overrides.items():
-        *parents, leaf = path.split(".")
-        node = config
-        for key in parents:
-            node = node[key]
-        node[leaf] = value
-    return config
 
 
 def _grid_combinations(param_grid: dict[str, list] | None) -> list[dict]:
@@ -143,7 +128,7 @@ def run_walk_forward(
         if param_grid:
             best_score = float("-inf")
             for overrides in _grid_combinations(param_grid):
-                candidate = _apply_overrides(base_config, overrides)
+                candidate = apply_overrides(base_config, overrides)
                 train_result = run_backtest(
                     prices,
                     candidate["signal_weights"],

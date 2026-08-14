@@ -1,45 +1,79 @@
 """Web-backend integration for paper trading -- persists
 alpha_engine.live.runner.run_live_rebalance results into the dashboard's
-DB. Analogous to app/runner.py (backtest/walkforward), but for an ongoing,
+DB, one independent session per Strategy (see models.py::Strategy).
+Analogous to app/runner.py (backtest/walkforward), but for an ongoing,
 long-lived session instead of a one-shot completed run -- see
 Run.status="active" and models.py::LiveOrder's docstrings for why.
+
+Every function here takes a `strategy_id` (plain int), not a `Strategy`
+ORM object, and re-fetches it within its own session -- same pattern as
+app/runner.py::execute_run(run_id, ...). Passing ORM objects across the
+session boundary (e.g. one fetched by a scheduler loop, then handed to a
+function that opens its own session) risks DetachedInstanceError on any
+attribute not already loaded; plain IDs sidestep that entirely.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import traceback
 from datetime import date
 
 from alpha_engine.broker import alpaca as broker
 from alpha_engine.live.anomaly_guard import run_anomaly_check
 from alpha_engine.live.runner import run_live_rebalance
+from alpha_engine.live.state import REPO_ROOT
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import AiUsageEvent, EquityPoint, LiveOrder, Run
+from app.models import AiUsageEvent, EquityPoint, LiveOrder, Run, Strategy
 
 PAPER_TRADE_RUN_TYPE = "paper_trade"
 
 logger = logging.getLogger(__name__)
 
 
-def get_or_create_paper_trade_run(db) -> Run:
-    """Idempotent -- returns the existing active paper-trade session if one
-    exists, otherwise creates it. There's at most one active session at a
-    time: this mirrors alpha_engine.live.state's single persisted state
-    file, since there's only one real Alpaca paper account behind either.
+def _state_path(strategy: Strategy):
+    return REPO_ROOT / "data" / f"live_state_{strategy.name}.json"
+
+
+def _config_overrides(strategy: Strategy) -> dict:
+    return json.loads(strategy.config_overrides_json)
+
+
+def _universe_symbols(strategy: Strategy) -> list[str] | None:
+    return json.loads(strategy.universe_symbols_json) if strategy.universe_symbols_json else None
+
+
+def _broker_client(strategy: Strategy):
+    return broker.get_client(
+        api_key=os.environ[strategy.alpaca_key_env],
+        secret_key=os.environ[strategy.alpaca_secret_env],
+    )
+
+
+def get_or_create_strategy_run(db, strategy: Strategy) -> Run:
+    """Idempotent -- returns the existing active `Run` for this strategy if
+    one exists, otherwise creates it. At most one active session per
+    strategy: mirrors live/state.py's one-persisted-state-file-per-
+    strategy, since each strategy trades exactly one real Alpaca paper
+    account.
     """
     existing = db.scalars(
-        select(Run).where(Run.run_type == PAPER_TRADE_RUN_TYPE, Run.status == "active")
+        select(Run).where(
+            Run.run_type == PAPER_TRADE_RUN_TYPE, Run.strategy_id == strategy.id, Run.status == "active"
+        )
     ).first()
     if existing is not None:
         return existing
 
     run = Run(
         run_type=PAPER_TRADE_RUN_TYPE,
+        strategy_id=strategy.id,
         status="active",
-        config_json="{}",
-        universe_json="[]",
+        config_json=strategy.config_overrides_json,
+        universe_json=strategy.universe_symbols_json or "[]",
         start_date=date.today().isoformat(),
         end_date=None,
     )
@@ -49,11 +83,12 @@ def get_or_create_paper_trade_run(db) -> Run:
     return run
 
 
-def execute_paper_rebalance(session_factory=SessionLocal) -> None:
-    """Runs one real rebalance against Alpaca (via alpha_engine.live.runner,
-    sharing the same live/state.py the CLI uses) and persists results to
-    the paper-trade session's Run row. Called by both the manual
-    POST /api/live/rebalance-now endpoint and the weekly scheduler job.
+def execute_paper_rebalance(strategy_id: int, session_factory=SessionLocal) -> None:
+    """Runs one real rebalance against this strategy's Alpaca account (via
+    alpha_engine.live.runner, sharing that strategy's own live/state.py
+    file) and persists results to its `Run` row. Called by both the
+    manual POST /api/live/{strategy_id}/rebalance-now endpoint and the
+    weekly scheduler job.
 
     Unlike app/runner.py's execute_run, a per-rebalance failure does NOT
     flip the session to status="failed" -- this is a persistent session
@@ -62,10 +97,16 @@ def execute_paper_rebalance(session_factory=SessionLocal) -> None:
     """
     db = session_factory()
     try:
-        run = get_or_create_paper_trade_run(db)
+        strategy = db.get(Strategy, strategy_id)
+        run = get_or_create_strategy_run(db, strategy)
 
         try:
-            result = run_live_rebalance()
+            result = run_live_rebalance(
+                broker_client=_broker_client(strategy),
+                state_path=_state_path(strategy),
+                strategy_overrides=_config_overrides(strategy),
+                symbols_override=_universe_symbols(strategy),
+            )
         except Exception:
             run.error_message = traceback.format_exc()
             db.commit()
@@ -95,6 +136,7 @@ def execute_paper_rebalance(session_factory=SessionLocal) -> None:
         if result.ai_usage is not None:
             db.add(
                 AiUsageEvent(
+                    run_id=run.id,
                     date=today_str,
                     source="news_ai_sentiment",
                     input_tokens=result.ai_usage["input_tokens"],
@@ -109,28 +151,29 @@ def execute_paper_rebalance(session_factory=SessionLocal) -> None:
         db.close()
 
 
-def record_daily_equity_snapshot(session_factory=SessionLocal) -> None:
+def record_daily_equity_snapshot(strategy_id: int, session_factory=SessionLocal) -> None:
     """Records today's real Alpaca account equity as an EquityPoint even
     on days with no rebalance and nothing flagged by the anomaly guard --
     gives the dashboard's equity curve daily resolution instead of only
     one point per weekly rebalance. Idempotent per day (a rebalance may
     have already recorded today's point; this is a no-op if so). A read
-    of a public/paper account, not a trading action -- failures are
-    logged, not surfaced on Run.error_message (that field is reserved for
-    failures that affect trading itself), so a transient outage here
-    never puts a false alarm on the dashboard.
+    of a paper account, not a trading action -- failures are logged, not
+    surfaced on Run.error_message (that field is reserved for failures
+    that affect trading itself), so a transient outage here never puts a
+    false alarm on the dashboard.
     """
     db = session_factory()
     try:
-        run = get_or_create_paper_trade_run(db)
+        strategy = db.get(Strategy, strategy_id)
+        run = get_or_create_strategy_run(db, strategy)
         today_str = date.today().isoformat()
         existing = db.query(EquityPoint).filter_by(run_id=run.id, date=today_str).first()
         if existing is not None:
             return
         try:
-            account = broker.get_account(broker.get_client())
+            account = broker.get_account(_broker_client(strategy))
         except Exception:
-            logger.warning("Daily equity snapshot failed: %s", traceback.format_exc())
+            logger.warning("Daily equity snapshot failed for strategy %s: %s", strategy.name, traceback.format_exc())
             return
         db.add(EquityPoint(run_id=run.id, date=today_str, equity=account["equity"]))
         db.commit()
@@ -138,21 +181,25 @@ def record_daily_equity_snapshot(session_factory=SessionLocal) -> None:
         db.close()
 
 
-def execute_anomaly_check(session_factory=SessionLocal) -> None:
-    """Runs the daily per-position anomaly check (live/anomaly_guard.py),
-    entirely independent of the weekly rebalance, and persists any forced
-    sells to the paper-trade session's Run row tagged trigger="anomaly" so
-    the dashboard can tell them apart from routine rebalance orders. Same
-    non-failing error-handling posture as execute_paper_rebalance -- a
-    failed check today shouldn't flip the session to failed, just try
-    again on the next scheduled check.
+def execute_anomaly_check(strategy_id: int, session_factory=SessionLocal) -> None:
+    """Runs the daily per-position anomaly check (live/anomaly_guard.py)
+    against this strategy's Alpaca account, entirely independent of the
+    weekly rebalance, and persists any forced sells to its `Run` row
+    tagged trigger="anomaly" so the dashboard can tell them apart from
+    routine rebalance orders. Same non-failing error-handling posture as
+    execute_paper_rebalance -- a failed check today shouldn't flip the
+    session to failed, just try again on the next scheduled check.
     """
     db = session_factory()
     try:
-        run = get_or_create_paper_trade_run(db)
+        strategy = db.get(Strategy, strategy_id)
+        run = get_or_create_strategy_run(db, strategy)
 
         try:
-            result = run_anomaly_check()
+            result = run_anomaly_check(
+                broker_client=_broker_client(strategy),
+                strategy_overrides=_config_overrides(strategy),
+            )
         except Exception:
             run.error_message = traceback.format_exc()
             db.commit()

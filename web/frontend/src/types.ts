@@ -21,6 +21,23 @@ export interface RunSummary {
   is_public: boolean;
 }
 
+export interface Strategy {
+  id: number;
+  name: string;
+  display_name: string;
+  description: string;
+  risk_tier: string;
+  enabled: boolean;
+}
+
+export interface StrategySummary extends Strategy {
+  run_id: number | null;
+  status: RunStatus | null;
+  equity: number | null;
+  total_pnl_usd: number | null;
+  total_pnl_pct: number | null;
+}
+
 export interface EquityPoint {
   date: string;
   equity: number;
