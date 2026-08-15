@@ -52,6 +52,36 @@ USER_AGENT = "alpha-engine-research contact@alpha-engine.local"
 OPEN_MARKET_CODES = {"P", "S"}  # purchase, sale -- excludes grants/exercises/gifts/etc.
 REQUEST_PAUSE_SECONDS = 0.15  # stay comfortably under SEC's fair-access rate guidance
 
+# Manual overrides for symbols where SEC's live ticker->CIK mapping
+# (`_load_ticker_to_cik_map`) resolves to the wrong entity -- specifically,
+# a company that reorganized into a holding-company structure, where SEC's
+# *current* ticker ownership snapshot points at the new holding entity
+# (which has no Form-4 history of its own) instead of the legacy operating
+# entity that actually holds the multi-decade insider-trading record.
+#
+# Discovered via XOM during the 204-symbol backfill: SEC's live mapping put
+# "XOM" -> CIK 0002115436 ("ExxonMobil Holdings Corp"), which has zero Form
+# 4 filings (`insiderTransactionForIssuerExists: 0` at
+# https://data.sec.gov/submissions/CIK0002115436.json) -- silently producing
+# a false "0 open-market transactions" result indistinguishable from a
+# symbol with genuinely no insider activity (e.g. BRK-B, where 0 is real).
+# The actual history sits under CIK 0000034088 ("EXXON MOBIL CORP"), which
+# still has the filings but no longer carries the ticker in SEC's current
+# mapping (confirmed via https://data.sec.gov/submissions/CIK0000034088.json).
+#
+# SCOPE NOTE: only XOM has been verified and fixed so far. Other old,
+# large-cap symbols in config/universe.yaml that went through a similar
+# holding-company reorganization could have the same silent false-zero and
+# have *not* been audited for this -- that's a separate investigation, not
+# done as part of this backfill. To check a suspect symbol: fetch
+# https://data.sec.gov/submissions/CIK{cik}.json for whatever CIK
+# `_load_ticker_to_cik_map()` currently resolves it to, and look at
+# `insiderTransactionForIssuerExists` -- if it's 0 for an old, large
+# company, the ticker has likely been reassigned the same way XOM's was.
+MANUAL_CIK_OVERRIDES = {
+    "XOM": "0000034088",
+}
+
 
 def _cache_path(symbol: str) -> Path:
     return CACHE_DIR / f"{symbol.replace('/', '_')}.parquet"
@@ -97,7 +127,7 @@ def _search_form4_filings(symbol: str, start_date: str, end_date: str) -> list[d
     query only for symbols absent from SEC's mapping (e.g. some ETFs),
     where a text match is the only option available at all.
     """
-    cik = _load_ticker_to_cik_map().get(symbol.upper())
+    cik = MANUAL_CIK_OVERRIDES.get(symbol.upper()) or _load_ticker_to_cik_map().get(symbol.upper())
     base_params = {
         "forms": "4",
         "dateRange": "custom",
