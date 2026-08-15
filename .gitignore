@@ -17,3 +17,9 @@ web/frontend/dist/
 
 # live trading
 data/live_state.json
+
+# scratch/planning/findings docs -- not tracked, only README.md and CLAUDE.md are
+*.md
+!README.md
+!**/README.md
+!CLAUDE.md
