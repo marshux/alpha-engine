@@ -12,6 +12,40 @@ def select_top_n(scores: pd.Series, top_n: int) -> pd.Series:
     return scores.sort_values(ascending=False).head(top_n)
 
 
+def resolve_top_n(scores: pd.Series, config: dict) -> int:
+    """Resolves the position count for this rebalance -- either a fixed
+    `config["top_n"]` (Traditional/Contrarian Volatility's mode,
+    unchanged) or, when `config["top_n_pct"]` is set instead, a ratio of
+    the live scoreable universe (`len(scores)`, i.e. however many symbols
+    actually have a score this rebalance) that period, clamped between
+    `config.get("top_n_min", 1)` and `config.get("top_n_max")` (no ceiling
+    if unset).
+
+    Ratio-based sizing keeps a strategy's selectivity constant regardless
+    of universe size -- a fixed count on a small universe can end up
+    holding a much larger fraction of "everything" than the same count
+    would on a larger one, diluting whatever edge the ranking signal has
+    (the guide's own portfolio example holds 50 of a ~500-name universe,
+    ~10%). The `top_n_max` ceiling exists because the ratio alone isn't
+    self-correcting in the other direction: on this repo's original
+    63-symbol universe, a 10% ratio resolved to just 6 positions --
+    concentrated enough to add material single-name risk (confirmed via
+    walk-forward: Sharpe dropped from 1.13 pre-fix to 0.73 post-fix, see
+    systematic_core_findings.md) even though the *ratio* itself was
+    right. `top_n_min`/`top_n_max` bound the resolved count to a sane
+    range regardless of how small or large the live universe is.
+    """
+    if "top_n_pct" in config:
+        top_n_min = config.get("top_n_min", 1)
+        top_n_max = config.get("top_n_max")
+        raw = int(len(scores) * config["top_n_pct"])
+        clamped = max(top_n_min, raw)
+        if top_n_max is not None:
+            clamped = min(top_n_max, clamped)
+        return clamped
+    return config["top_n"]
+
+
 def _min_variance_weights(returns: pd.DataFrame) -> pd.Series:
     """Closed-form global minimum-variance weights:
     w = inv(Sigma) @ 1 / (1^T @ inv(Sigma) @ 1).
@@ -181,6 +215,20 @@ def modulate_theme_cap(
     return float(min(max(base_max_theme_weight * adjustment, min_weight), max_weight))
 
 
+def scale_gross_exposure(weights: pd.Series, exposure_fraction: float) -> pd.Series:
+    """Scales every target weight by `exposure_fraction`, leaving the
+    remainder as cash -- the HMM regime mode's continuous analogue of the
+    Faber trend filter's binary flatten-to-cash (decision/risk.py's
+    `regime_is_risk_on`). Purely deterministic given the two inputs, same
+    determinism pattern as `modulate_theme_cap`. `exposure_fraction` is
+    expected in [0, 1] (decision/regime.py's `GROSS_EXPOSURE_BY_REGIME`
+    values are), but this isn't enforced here -- a caller passing 1.0
+    (full exposure) is a no-op, which is what backtest/engine.py and
+    live/runner.py both do when regime.mode is "trend_filter".
+    """
+    return weights * exposure_fraction
+
+
 def build_portfolio(
     scores: pd.Series,
     volatility: pd.Series | pd.DataFrame | None,
@@ -188,7 +236,7 @@ def build_portfolio(
     config: dict,
     theme_map: dict[str, float] | None = None,
 ) -> pd.Series:
-    selected = select_top_n(scores, config["top_n"])
+    selected = select_top_n(scores, resolve_top_n(scores, config))
     weights = size_positions(
         selected, volatility, config["sizing"], config["max_position_weight"]
     )

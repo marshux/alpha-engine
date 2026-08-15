@@ -89,6 +89,10 @@ def run_walk_forward(
     fundamentals: dict[str, pd.DataFrame] | None = None,
     benchmark_prices: pd.DataFrame | None = None,
     theme_weights: dict[str, float] | None = None,
+    macro_data: pd.DataFrame | None = None,
+    train_ml_alpha: bool = False,
+    short_interest_data: dict[str, pd.DataFrame] | None = None,
+    insider_transactions: dict[str, pd.DataFrame] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> pd.DataFrame:
     """One row per window: the config that scored best (by Sharpe) on the
@@ -100,16 +104,35 @@ def run_walk_forward(
     rebalance-date range changes, so signals never lose lookback history
     at a window boundary (see run_backtest's `start`/`end` docstring).
 
-    `sector_map`, `fundamentals`, `benchmark_prices`, `theme_weights` are
-    passed straight through to every `run_backtest` call (train and test
-    alike) -- same meaning as run_backtest's own params.
+    `sector_map`, `fundamentals`, `benchmark_prices`, `theme_weights`,
+    `macro_data`, `short_interest_data`, `insider_transactions` are passed
+    straight through to every `run_backtest` call (train and test alike)
+    -- same meaning as run_backtest's own params. `macro_data`,
+    `short_interest_data`, `insider_transactions` also feed
+    `train_ml_alpha`'s feature builder below when given.
+
+    `train_ml_alpha`, if true: for each window, fits one
+    `alpha_engine.ml.alpha_model.AlphaModel` on a training set built from
+    `[window.train_start, window.train_end]` (`alpha_engine.ml.training.
+    build_training_set`), then reuses that single fitted model as the
+    `ml_model` for every `run_backtest` call in that window -- both the
+    grid-search candidates evaluated on the train range (if `param_grid`
+    is given) and the out-of-sample test-range evaluation. This is what
+    makes an `ml_alpha`-weighted strategy walk-forward-safe: the model
+    never sees any data past its own window's `train_end` at fit time,
+    and the fitted-on-train model is what's actually scored out-of-sample
+    on test, never a model re-fit with test-window data baked in. Needs
+    the `ml` extra (`lightgbm`) -- imported lazily here so a plain
+    walk-forward run without `train_ml_alpha` never needs it installed.
 
     `progress_callback`, if provided: called as `callback(steps_done,
     steps_total)` after every individual `run_backtest` call (each grid
     candidate evaluated on a train window, plus each window's test
     eval) -- a grid sweep across many windows can run for a long time with
     nothing else to observe progress by, so this is the only signal of
-    forward motion available before the whole thing finishes.
+    forward motion available before the whole thing finishes. Does not
+    count the per-window ML fit (not a `run_backtest` call), so
+    `total_walkforward_steps` stays accurate for its documented meaning.
     """
     steps_total = total_walkforward_steps(windows, param_grid)
     steps_done = 0
@@ -125,6 +148,26 @@ def run_walk_forward(
         best_config = base_config
         best_overrides: dict = {}
 
+        ml_model = None
+        if train_ml_alpha:
+            from alpha_engine.ml.alpha_model import AlphaModel
+            from alpha_engine.ml.training import build_training_set
+
+            X_train, y_train = build_training_set(
+                prices,
+                fundamentals,
+                macro_data,
+                benchmark_prices,
+                symbols=list(prices.keys()),
+                train_start=window.train_start,
+                train_end=window.train_end,
+                cadence=base_config["rebalance"],
+                short_interest_data=short_interest_data,
+                insider_transactions=insider_transactions,
+            )
+            if not X_train.empty:
+                ml_model = AlphaModel().train(X_train, y_train, trained_through=str(window.train_end.date()))
+
         if param_grid:
             best_score = float("-inf")
             for overrides in _grid_combinations(param_grid):
@@ -137,6 +180,10 @@ def run_walk_forward(
                     fundamentals=fundamentals,
                     benchmark_prices=benchmark_prices,
                     theme_weights=theme_weights,
+                    macro_data=macro_data,
+                    ml_model=ml_model,
+                    short_interest_data=short_interest_data,
+                    insider_transactions=insider_transactions,
                     start=window.train_start,
                     end=window.train_end,
                 )
@@ -157,6 +204,10 @@ def run_walk_forward(
             fundamentals=fundamentals,
             benchmark_prices=benchmark_prices,
             theme_weights=theme_weights,
+            macro_data=macro_data,
+            ml_model=ml_model,
+            short_interest_data=short_interest_data,
+            insider_transactions=insider_transactions,
             start=window.test_start,
             end=window.test_end,
         )

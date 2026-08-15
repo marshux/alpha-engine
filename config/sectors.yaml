@@ -74,3 +74,146 @@ ISRG: Health Care
 SPGI: Financials
 SMH: Technology
 TSM: Technology
+
+# Expansion to ~200 names -- see universe.yaml's matching comment.
+WFC: Financials
+NEE: Utilities
+MS: Financials
+GS: Financials
+RTX: Industrials
+AXP: Financials
+T: Communication Services
+BKNG: Consumer Discretionary
+PLD: Real Estate
+VRTX: Health Care
+SYK: Health Care
+MDLZ: Consumer Staples
+BLK: Financials
+REGN: Health Care
+ADI: Technology
+DE: Industrials
+PANW: Technology
+LRCX: Technology
+KLAC: Technology
+CI: Health Care
+MMC: Financials
+MU: Technology
+BSX: Health Care
+SCHW: Financials
+SO: Utilities
+ZTS: Health Care
+CB: Financials
+CME: Financials
+DUK: Utilities
+ICE: Financials
+SHW: Materials
+AON: Financials
+GILD: Health Care
+TJX: Consumer Discretionary
+PH: Industrials
+EOG: Energy
+SLB: Energy
+COP: Energy
+HUM: Health Care
+ELV: Health Care
+USB: Financials
+MCK: Health Care
+EQIX: Real Estate
+APD: Materials
+WM: Industrials
+MCO: Financials
+PSA: Real Estate
+NSC: Industrials
+ITW: Industrials
+ETN: Industrials
+FDX: Industrials
+FCX: Materials
+CSX: Industrials
+ECL: Materials
+EMR: Industrials
+HCA: Health Care
+ROP: Technology
+CTAS: Industrials
+OXY: Energy
+DXCM: Health Care
+MNST: Consumer Staples
+AIG: Financials
+PNC: Financials
+TFC: Financials
+COF: Financials
+ADP: Industrials
+FICO: Technology
+ORLY: Consumer Discretionary
+HLT: Consumer Discretionary
+GWW: Industrials
+FTNT: Technology
+EW: Health Care
+MSI: Technology
+AFL: Financials
+BDX: Health Care
+MET: Financials
+BIIB: Health Care
+CPRT: Industrials
+MCHP: Technology
+KMB: Consumer Staples
+CCI: Real Estate
+STZ: Consumer Staples
+ALL: Financials
+PPG: Materials
+EXC: Utilities
+CARR: Industrials
+NUE: Materials
+IDXX: Health Care
+TEL: Technology
+CTSH: Technology
+GLW: Technology
+VMC: Materials
+IQV: Health Care
+KEYS: Technology
+VRSK: Industrials
+TROW: Financials
+MLM: Materials
+DOV: Industrials
+LHX: Industrials
+CINF: Financials
+GPN: Financials
+OTIS: Industrials
+XYL: Industrials
+MTD: Health Care
+BR: Industrials
+ROK: Industrials
+CDNS: Technology
+SNPS: Technology
+ANSS: Technology
+DG: Consumer Staples
+DLTR: Consumer Discretionary
+WAT: Health Care
+CBOE: Financials
+EXPD: Industrials
+FAST: Industrials
+WRB: Financials
+TDY: Technology
+LDOS: Technology
+POOL: Consumer Discretionary
+CHD: Consumer Staples
+JKHY: Technology
+NDSN: Industrials
+HRL: Consumer Staples
+CF: Materials
+RPM: Materials
+BRO: Financials
+MKC: Consumer Staples
+NVR: Consumer Discretionary
+CSGP: Real Estate
+SNA: Industrials
+AWK: Utilities
+ATO: Utilities
+PKG: Materials
+ERIE: Financials
+LNT: Utilities
+WEC: Utilities
+CHRW: Industrials
+MKTX: Financials
+MOH: Health Care
+TRV: Financials
+PAYX: Industrials

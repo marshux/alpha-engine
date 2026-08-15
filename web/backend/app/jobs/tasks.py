@@ -4,6 +4,7 @@ callable/testable without APScheduler running at all.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 
 from alpha_engine.config import load_universe, universe_symbols
@@ -11,7 +12,12 @@ from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.data.fundamentals import get_universe_fundamentals
 
 from app.database import SessionLocal
-from app.live_runner import execute_anomaly_check, execute_paper_rebalance, record_daily_equity_snapshot
+from app.live_runner import (
+    execute_anomaly_check,
+    execute_ml_retrain,
+    execute_paper_rebalance,
+    record_daily_equity_snapshot,
+)
 from app.models import Run, Strategy
 from app.runner import execute_run
 from app.schemas import RunCreateRequest
@@ -29,6 +35,23 @@ def _enabled_strategy_ids() -> list[int]:
     db = SessionLocal()
     try:
         return [s.id for s in db.query(Strategy).filter_by(enabled=True).all()]
+    finally:
+        db.close()
+
+
+def _ml_alpha_strategy_ids() -> list[int]:
+    """Every Strategy weighting `ml_alpha`, regardless of `enabled` -- a
+    disabled strategy still under walk-forward validation should keep
+    getting a fresh model too, not just ones already live-trading.
+    """
+    db = SessionLocal()
+    try:
+        ids = []
+        for strategy in db.query(Strategy).all():
+            overrides = json.loads(strategy.config_overrides_json)
+            if overrides.get("signal_weights.ml_alpha", 0):
+                ids.append(strategy.id)
+        return ids
     finally:
         db.close()
 
@@ -115,3 +138,18 @@ def daily_equity_snapshot() -> None:
     """
     for strategy_id in _enabled_strategy_ids():
         record_daily_equity_snapshot(strategy_id)
+
+
+def monthly_ml_retrain() -> None:
+    """Refits every ml_alpha-weighted Strategy's model
+    (alpha_engine.ml.alpha_model.AlphaModel) on a monthly cadence --
+    unlike decision/regime.py's HMM classifier (cheap enough to refit at
+    every single rebalance, see live_runner.py's module docstring), a
+    LightGBM fit is too slow to redo that often, so it runs on its own
+    schedule and the resulting model file is picked up automatically by
+    the next rebalance. Registered alongside nightly_cache_refresh/
+    weekly_auto_backtest, NOT gated by ENABLE_LIVE_TRADING -- this is
+    pure research/training with no broker interaction at all.
+    """
+    for strategy_id in _ml_alpha_strategy_ids():
+        execute_ml_retrain(strategy_id)

@@ -328,3 +328,200 @@ def test_circuit_breaker_flattens_without_computing_signals(tmp_path, monkeypatc
 
     saved = json.loads(state_path.read_text())
     assert saved["cooldown_remaining"] == 4  # risk.circuit_breaker_cooldown_periods
+
+
+def test_hmm_regime_mode_scales_exposure_instead_of_flattening(tmp_path, monkeypatch):
+    _patch_config(
+        monkeypatch, strategy_overrides={"regime": {"enabled": True, "mode": "hmm", "ma_window_days": 200}}
+    )
+    _patch_data_fetches(monkeypatch)
+    _patch_neutral_sentiment(monkeypatch)
+
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(
+            getattr(runner, name), "compute", lambda *a, **k: pd.Series({"AAPL": 1.0, "MSFT": 0.0})
+        )
+
+    monkeypatch.setattr(
+        runner.broker,
+        "get_account",
+        lambda client: {"equity": 100_000.0, "cash": 100_000.0, "buying_power": 100_000.0},
+    )
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    def fake_evaluate_regime(prices, benchmark_prices, macro_data, as_of, **kwargs):
+        return ("BEAR_TREND", 0.4, None)
+
+    monkeypatch.setattr("alpha_engine.decision.regime.evaluate_regime", fake_evaluate_regime)
+    macro_data = pd.DataFrame(
+        {"yield_curve": [1.0], "vix": [15.0], "credit_spread": [3.0]}, index=[pd.Timestamp("2026-01-05")]
+    )
+
+    result = runner.run_live_rebalance(
+        dry_run=True, state_path=tmp_path / "live_state.json", broker_client=object(), macro_data=macro_data
+    )
+
+    # top_n=2 selects both AAPL/MSFT equal-weight (0.5 each, summing to
+    # 1.0) before the fake regime's 0.4 exposure scales it down -- not
+    # flattened to empty the way the binary trend filter would.
+    assert not result.target_weights.empty
+    assert result.target_weights.sum() == pytest.approx(0.4)
+
+
+def test_hmm_regime_mode_without_macro_data_degrades_to_full_exposure(tmp_path, monkeypatch):
+    _patch_config(
+        monkeypatch, strategy_overrides={"regime": {"enabled": True, "mode": "hmm", "ma_window_days": 200}}
+    )
+    _patch_data_fetches(monkeypatch)
+    _patch_neutral_sentiment(monkeypatch)
+
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(
+            getattr(runner, name), "compute", lambda *a, **k: pd.Series({"AAPL": 1.0, "MSFT": 0.0})
+        )
+
+    monkeypatch.setattr(
+        runner.broker,
+        "get_account",
+        lambda client: {"equity": 100_000.0, "cash": 100_000.0, "buying_power": 100_000.0},
+    )
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    # No macro_data passed -- hmm mode should degrade to full exposure
+    # rather than error.
+    result = runner.run_live_rebalance(
+        dry_run=True, state_path=tmp_path / "live_state.json", broker_client=object()
+    )
+
+    assert result.target_weights.sum() == pytest.approx(1.0)
+
+
+def test_ml_model_signal_participates_in_scoring(tmp_path, monkeypatch):
+    _patch_config(
+        monkeypatch,
+        strategy_overrides={
+            "signal_weights": {
+                "momentum": 0.0,
+                "mean_reversion": 0.0,
+                "volatility": 0.0,
+                "value": 0.0,
+                "quality": 0.0,
+                "ai_theme": 0.0,
+                "ml_alpha": 1.0,
+            },
+            "portfolio": {
+                "top_n": 1,
+                "max_position_weight": 1.0,
+                "max_sector_weight": 1.0,
+                "max_theme_weight": 1.0,
+                "sizing": "equal_weight",
+            },
+        },
+    )
+    _patch_data_fetches(monkeypatch)
+    _patch_neutral_sentiment(monkeypatch)
+
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(
+            getattr(runner, name), "compute", lambda *a, **k: pd.Series({"AAPL": 0.0, "MSFT": 0.0})
+        )
+
+    monkeypatch.setattr(
+        runner.broker,
+        "get_account",
+        lambda client: {"equity": 100_000.0, "cash": 100_000.0, "buying_power": 100_000.0},
+    )
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    class _FakeMlModel:
+        def predict(self, X):
+            return pd.Series({sym: (1.0 if sym == "MSFT" else -1.0) for sym in X.index})
+
+    result = runner.run_live_rebalance(
+        dry_run=True, state_path=tmp_path / "live_state.json", broker_client=object(), ml_model=_FakeMlModel()
+    )
+
+    # AAPL/MSFT score identically on every other signal (all zeroed above)
+    # -- MSFT winning proves ml_alpha actually drove the selection.
+    assert list(result.target_weights.index) == ["MSFT"]
+
+
+def test_reduce_tier_scales_exposure_at_intermediate_drawdown(tmp_path, monkeypatch):
+    _patch_config(
+        monkeypatch,
+        strategy_overrides={
+            "risk": {
+                "stop_loss_pct": 0.99,
+                "max_drawdown_pct": 0.99,
+                "reduce_drawdown_pct": 0.05,
+                "reduce_exposure_scale": 0.4,
+                "circuit_breaker_cooldown_periods": 4,
+            },
+            "portfolio": {
+                "top_n": 2,
+                "max_position_weight": 1.0,
+                "max_sector_weight": 1.0,
+                "sizing": "equal_weight",
+            },
+        },
+    )
+    _patch_data_fetches(monkeypatch)
+    _patch_neutral_sentiment(monkeypatch)
+
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(
+            getattr(runner, name), "compute", lambda *a, **k: pd.Series({"AAPL": 1.0, "MSFT": 0.0})
+        )
+
+    state_path = tmp_path / "live_state.json"
+    # 8% drawdown from the persisted peak -- past the 5% REDUCE threshold,
+    # well under the (deliberately very high) HALT threshold.
+    save_state(LiveState(breaker_peak=100_000.0, cooldown_remaining=0, last_rebalance_date=None), state_path)
+
+    monkeypatch.setattr(
+        runner.broker,
+        "get_account",
+        lambda client: {"equity": 92_000.0, "cash": 92_000.0, "buying_power": 92_000.0},
+    )
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    result = runner.run_live_rebalance(dry_run=True, state_path=state_path, broker_client=object())
+
+    # top_n=2, equal_weight -> 0.5 each (sum 1.0) before REDUCE scales to 0.4.
+    assert result.target_weights.sum() == pytest.approx(0.4)
+
+
+def test_reduce_tier_disabled_by_default_ignores_drawdown(tmp_path, monkeypatch):
+    _patch_config(
+        monkeypatch,
+        strategy_overrides={
+            "risk": {"stop_loss_pct": 0.99, "max_drawdown_pct": 0.99, "circuit_breaker_cooldown_periods": 4},
+            "portfolio": {
+                "top_n": 2,
+                "max_position_weight": 1.0,
+                "max_sector_weight": 1.0,
+                "sizing": "equal_weight",
+            },
+        },
+    )
+    _patch_data_fetches(monkeypatch)
+    _patch_neutral_sentiment(monkeypatch)
+
+    for name in _SIGNAL_MODS:
+        monkeypatch.setattr(
+            getattr(runner, name), "compute", lambda *a, **k: pd.Series({"AAPL": 1.0, "MSFT": 0.0})
+        )
+
+    state_path = tmp_path / "live_state.json"
+    save_state(LiveState(breaker_peak=100_000.0, cooldown_remaining=0, last_rebalance_date=None), state_path)
+
+    monkeypatch.setattr(
+        runner.broker,
+        "get_account",
+        lambda client: {"equity": 92_000.0, "cash": 92_000.0, "buying_power": 92_000.0},
+    )
+    monkeypatch.setattr(runner.broker, "get_positions", lambda client: {})
+
+    result = runner.run_live_rebalance(dry_run=True, state_path=state_path, broker_client=object())
+
+    assert result.target_weights.sum() == pytest.approx(1.0)

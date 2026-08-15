@@ -11,6 +11,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pyarrow>=16.0",
     "matplotlib>=3.8",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,7 @@ web = [
     "python-multipart>=0.0.9",
 ]
 live = ["alpaca-py>=0.30"]
+ml = ["lightgbm>=4.0", "hmmlearn>=0.3"]
 
 [project.scripts]
 alpha-engine = "alpha_engine.cli:main"

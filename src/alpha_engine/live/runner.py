@@ -30,12 +30,27 @@ Deliberately does NOT live in web/backend/ -- both the CLI
 call this same function, sharing the same persisted state
 (live/state.py), without the CLI needing to depend on the web backend or
 vice versa.
+
+Deliberately does NOT wire up the three newest signals
+(earnings_revision, short_interest, insider_buying -- see
+signals/earnings_revision.py, data/short_interest.py, data/insider.py):
+unlike fundamentals/macro data, their fetch cost is not fast or bounded
+(data/insider.py's own docstring: potentially many individual filing
+fetches per symbol, each rate-limited) -- acceptable for offline
+backtest/walk-forward research, not for a synchronous call inside a live
+rebalance's critical path. A strategy that weights these signals in live
+mode simply gets a neutral (0) score for them (run_backtest's docstring
+covers the same behavior) -- not a special case, the existing
+missing-signal handling already covers it. Wiring these into live mode
+for real would need an async/pre-fetched-on-a-schedule design, not
+attempted here.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -50,11 +65,18 @@ from alpha_engine.config import (
 )
 from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.data.fundamentals import get_universe_fundamentals
-from alpha_engine.decision.portfolio import build_portfolio, modulate_theme_cap
+from alpha_engine.decision.portfolio import build_portfolio, modulate_theme_cap, scale_gross_exposure
 from alpha_engine.decision.risk import regime_is_risk_on, stopped_out_positions
 from alpha_engine.decision.scorer import combine_scores
 from alpha_engine.live.state import STATE_PATH, load_state, save_state
+from alpha_engine.ml.features import build_ml_features
 from alpha_engine.signals import ai_theme, mean_reversion, momentum, news_ai, quality, value, volatility
+
+if TYPE_CHECKING:
+    # Deferred at runtime (see the regime.mode == "hmm" branch below) so a
+    # plain live-rebalance without a regime/ml-alpha strategy never needs
+    # the `ml` extra (lightgbm/hmmlearn) installed.
+    from alpha_engine.ml.alpha_model import AlphaModel
 
 SIGNAL_MODULES = {
     "momentum": momentum,
@@ -102,6 +124,8 @@ def run_live_rebalance(
     state_path: Path | None = None,
     strategy_overrides: dict[str, object] | None = None,
     symbols_override: list[str] | None = None,
+    macro_data: pd.DataFrame | None = None,
+    ml_model: "AlphaModel | None" = None,
 ) -> LiveRebalanceResult:
     """`broker_client`, if provided: an already-constructed alpaca-py
     `TradingClient` (tests pass a mock here instead of monkeypatching
@@ -126,6 +150,16 @@ def run_live_rebalance(
     (`theme_weights` below) is filtered down to symbols actually in play
     so a strategy whose universe has no theme-tagged names never pays for
     a sentiment call that couldn't affect it either way.
+
+    `macro_data`/`ml_model`: same meaning as backtest/engine.py's
+    `run_backtest` params (macro/regime data for `strategy["regime"]
+    ["mode"] == "hmm"`, and a pre-fitted ML alpha model for the
+    `ml_alpha` signal) -- see that function's docstring. Callers (the web
+    backend's `execute_paper_rebalance`) are responsible for loading the
+    strategy's persisted model file and current macro data before calling
+    this function; `run_live_rebalance` itself has no retrain schedule
+    awareness, same division of responsibility as backtest/walkforward.py
+    owning the *fit* half of that split.
     """
     as_of = as_of or pd.Timestamp.now().normalize()
     today_str = as_of.date().isoformat()
@@ -168,6 +202,7 @@ def run_live_rebalance(
         "circuit_breaker_cooldown_periods", DEFAULT_CIRCUIT_BREAKER_COOLDOWN_PERIODS
     )
     breaker_peak = state.breaker_peak if state.breaker_peak is not None else equity
+    regime_mode = regime_cfg.get("mode", "trend_filter")
 
     target_weights = pd.Series(dtype=float)
     ai_usage: dict | None = None
@@ -182,12 +217,43 @@ def run_live_rebalance(
         if drawdown <= -risk_cfg["max_drawdown_pct"]:
             state.cooldown_remaining = cooldown_periods
         elif (
-            benchmark_prices is not None
-            and regime_cfg.get("enabled", False)
+            regime_cfg.get("enabled", False)
+            and regime_mode == "trend_filter"
+            and benchmark_prices is not None
             and not regime_is_risk_on(benchmark_prices, as_of, regime_cfg["ma_window_days"])
         ):
             pass  # flatten, no cooldown -- re-evaluated fresh next rebalance
         else:
+            # REDUCE tier: opt-in (risk.reduce_drawdown_pct unset -> stays
+            # 1.0, byte-identical to before this existed) -- see
+            # backtest/engine.py's matching block for the full rationale.
+            risk_reduce_scale = 1.0
+            reduce_threshold = risk_cfg.get("reduce_drawdown_pct")
+            if reduce_threshold is not None and drawdown <= -reduce_threshold:
+                risk_reduce_scale = risk_cfg.get("reduce_exposure_scale", 0.5)
+
+            gross_exposure = 1.0
+            effective_signal_weights = signal_weights
+            if regime_cfg.get("enabled", False) and regime_mode == "hmm":
+                # Continuous alternative to the binary trend filter above --
+                # no flatten here, the portfolio still gets built normally
+                # below, just scaled down (or tilted, via a weight
+                # override) rather than fully flattened. See
+                # backtest/engine.py's matching branch and
+                # decision/regime.py's module docstring.
+                if benchmark_prices is not None and macro_data is not None:
+                    from alpha_engine.decision.regime import evaluate_regime, resolve_exposure_table
+
+                    _label, gross_exposure, weight_overrides = evaluate_regime(
+                        prices,
+                        benchmark_prices,
+                        macro_data,
+                        as_of,
+                        exposure_table=resolve_exposure_table(regime_cfg),
+                    )
+                    if weight_overrides is not None:
+                        effective_signal_weights = weight_overrides
+
             entry_prices = {s: p["avg_entry_price"] for s, p in positions.items()}
             current_prices = _current_prices(prices, as_of)
             stopped = stopped_out_positions(entry_prices, current_prices, risk_cfg["stop_loss_pct"])
@@ -199,8 +265,11 @@ def run_live_rebalance(
             signal_table["quality"] = quality.compute(fundamentals, as_of)
             if theme_weights:
                 signal_table["ai_theme"] = ai_theme.compute(prices, as_of, theme_weights)
+            if ml_model is not None:
+                ml_features = build_ml_features(prices, fundamentals, macro_data, as_of, list(prices.keys()))
+                signal_table["ml_alpha"] = ml_model.predict(ml_features)
 
-            scores = combine_scores(signal_table, signal_weights)
+            scores = combine_scores(signal_table, effective_signal_weights)
             if stopped:
                 scores = scores.drop(index=[s for s in stopped if s in scores.index])
 
@@ -231,6 +300,12 @@ def run_live_rebalance(
                 config=effective_portfolio_cfg,
                 theme_map=theme_weights,
             )
+            # Whichever of the two independent exposure signals (regime
+            # read, REDUCE-tier drawdown check) is more cautious wins --
+            # see backtest/engine.py's matching comment.
+            effective_exposure = min(gross_exposure, risk_reduce_scale)
+            if effective_exposure != 1.0:
+                target_weights = scale_gross_exposure(target_weights, effective_exposure)
 
     state.breaker_peak = breaker_peak
 

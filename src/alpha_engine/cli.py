@@ -17,6 +17,7 @@ from alpha_engine.backtest.walkforward import generate_windows, run_walk_forward
 from alpha_engine.config import load_sector_map, load_strategy, load_themes, load_universe, universe_symbols
 from alpha_engine.data.equities import get_universe_prices
 from alpha_engine.data.fundamentals import get_universe_fundamentals
+from alpha_engine.data.macro import get_macro_data
 
 
 def cmd_backtest(args: argparse.Namespace) -> int:
@@ -44,6 +45,23 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         print(f"Fetching fundamentals for {len(symbols)} symbols (coverage will be thin for older dates)...", flush=True)
         fundamentals = get_universe_fundamentals(symbols)
 
+    # Only fetched when actually needed (regime.mode == "hmm" and/or a
+    # --ml-model is given) -- a plain backtest with neither shouldn't pay
+    # for a FRED network round-trip it has no use for.
+    macro_data = None
+    if strategy.get("regime", {}).get("mode") == "hmm" or args.ml_model:
+        print("Fetching macro data (FRED)...", flush=True)
+        macro_data = get_macro_data()
+
+    ml_model = None
+    if args.ml_model:
+        # Deferred: only reached when --ml-model is actually passed, so a
+        # plain backtest-only install never needs the `ml` extra
+        # (lightgbm) installed just to run `alpha-engine backtest`.
+        from alpha_engine.ml.alpha_model import AlphaModel
+
+        ml_model = AlphaModel.load(args.ml_model)
+
     result = run_backtest(
         prices,
         strategy["signal_weights"],
@@ -52,6 +70,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         fundamentals=fundamentals,
         benchmark_prices=benchmark_prices.get(primary_benchmark),
         theme_weights=theme_weights,
+        macro_data=macro_data,
+        ml_model=ml_model,
     )
     if result.equity_curve.empty:
         print("Backtest produced no equity points -- check date range vs data availability.", file=sys.stderr)
@@ -155,6 +175,12 @@ def cmd_walkforward(args: argparse.Namespace) -> int:
         print(f"Fetching fundamentals for {len(symbols)} symbols (coverage will be thin for older dates)...", flush=True)
         fundamentals = get_universe_fundamentals(symbols)
 
+    # Only fetched when actually needed -- same reasoning as cmd_backtest.
+    macro_data = None
+    if strategy.get("regime", {}).get("mode") == "hmm" or args.train_ml_alpha:
+        print("Fetching macro data (FRED)...", flush=True)
+        macro_data = get_macro_data()
+
     all_dates = pd.DatetimeIndex(sorted(set().union(*(df.index for df in prices.values()))))
     windows = generate_windows(all_dates, args.train_years, args.test_years, args.step_years)
     if not windows:
@@ -173,6 +199,8 @@ def cmd_walkforward(args: argparse.Namespace) -> int:
     steps_total = total_walkforward_steps(windows, param_grid)
     combos = steps_total // len(windows) - 1
     print(f"Running walk-forward validation over {len(windows)} window(s), {combos} config(s) each...", flush=True)
+    if args.train_ml_alpha:
+        print("(fitting a fresh ml_alpha model per window -- requires the `ml` extra)", flush=True)
     results = run_walk_forward(
         prices,
         strategy,
@@ -182,6 +210,8 @@ def cmd_walkforward(args: argparse.Namespace) -> int:
         fundamentals=fundamentals,
         benchmark_prices=benchmark_prices,
         theme_weights=theme_weights,
+        macro_data=macro_data,
+        train_ml_alpha=args.train_ml_alpha,
         progress_callback=_cli_progress_printer(),
     )
 
@@ -193,6 +223,65 @@ def cmd_walkforward(args: argparse.Namespace) -> int:
     out_path = output_dir / "walkforward.csv"
     results.to_csv(out_path, index=False)
     print(f"\nWalk-forward results written to {out_path}")
+    return 0
+
+
+def cmd_train_ml_alpha(args: argparse.Namespace) -> int:
+    # Imported here, not at module top -- alpha_engine.ml.alpha_model
+    # depends on the optional `ml` extra (lightgbm), which a plain
+    # backtest-only install shouldn't be forced to pull in just to import
+    # cli.py at all (same reasoning as cmd_live_rebalance's deferred
+    # import of the `live` extra).
+    from alpha_engine.ml.alpha_model import AlphaModel
+    from alpha_engine.ml.training import build_training_set
+
+    universe = load_universe()
+    strategy = load_strategy(Path(args.config)) if args.config else load_strategy()
+    symbols = args.symbols if args.symbols else universe_symbols(universe)
+    primary_benchmark = strategy["backtest"]["benchmark"]
+
+    print(f"Fetching prices for {len(symbols)} symbols + benchmark {primary_benchmark}...", flush=True)
+    prices = get_universe_prices(symbols, args.start, args.end)
+    if not prices:
+        print("No price data fetched for any symbol -- aborting.", file=sys.stderr)
+        return 1
+    benchmark_prices = get_universe_prices([primary_benchmark], args.start, args.end).get(primary_benchmark)
+    if benchmark_prices is None:
+        print(f"No price data fetched for benchmark {primary_benchmark} -- aborting.", file=sys.stderr)
+        return 1
+
+    print(f"Fetching fundamentals for {len(symbols)} symbols...", flush=True)
+    fundamentals = get_universe_fundamentals(symbols)
+
+    print("Fetching macro data (FRED)...", flush=True)
+    macro_data = get_macro_data()
+
+    train_start, train_end = pd.Timestamp(args.start), pd.Timestamp(args.end)
+    print(f"Building training set ({train_start.date()} to {train_end.date()})...", flush=True)
+    X, y = build_training_set(
+        prices,
+        fundamentals,
+        macro_data,
+        benchmark_prices,
+        symbols=symbols,
+        train_start=train_start,
+        train_end=train_end,
+        cadence=strategy["rebalance"],
+        forward_days=args.forward_days,
+    )
+    if X.empty:
+        print(
+            "No training rows produced -- date range too narrow relative to --forward-days.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Training on {len(X)} (date, symbol) rows...", flush=True)
+
+    model = AlphaModel().train(X, y, trained_through=str(train_end.date()))
+
+    out_path = Path(args.out)
+    model.save(out_path)
+    print(f"Model saved to {out_path} (+ {out_path.name}.meta.json)")
     return 0
 
 
@@ -255,6 +344,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Fetch fundamentals and include value/quality signals (slower; thin coverage on older dates)",
     )
+    bt.add_argument(
+        "--ml-model",
+        default=None,
+        help="Path to a trained AlphaModel (see `train-ml-alpha`) -- adds the ml_alpha signal (requires the `ml` extra)",
+    )
     bt.set_defaults(func=cmd_backtest)
 
     wf = sub.add_parser("walkforward", help="Rolling train/test window validation")
@@ -275,7 +369,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Fetch fundamentals and include value/quality signals (slower; thin coverage on older dates)",
     )
+    wf.add_argument(
+        "--train-ml-alpha",
+        action="store_true",
+        help="Fit a fresh ml_alpha model per window on that window's train range only, walk-forward-safe (requires the `ml` extra)",
+    )
     wf.set_defaults(func=cmd_walkforward)
+
+    train_ml = sub.add_parser(
+        "train-ml-alpha",
+        help="Fit a LightGBM ml_alpha model on historical data and save it to disk (requires the `ml` extra)",
+    )
+    train_ml.add_argument("--start", required=True)
+    train_ml.add_argument("--end", required=True)
+    train_ml.add_argument("--config", default=None, help="Path to strategy.yaml (default: config/strategy.yaml)")
+    train_ml.add_argument("--symbols", nargs="*", default=None, help="Override the configured universe")
+    train_ml.add_argument(
+        "--forward-days", type=int, default=21, help="Forward-return horizon used to label training rows"
+    )
+    train_ml.add_argument(
+        "--out", default="data/models/ml_alpha.txt", help="Output path for the trained model"
+    )
+    train_ml.set_defaults(func=cmd_train_ml_alpha)
 
     live = sub.add_parser(
         "live-rebalance", help="Run one live/paper rebalance against Alpaca (requires the `live` extra)"

@@ -19,6 +19,7 @@ from alpha_engine.live.runner import LiveRebalanceResult
 from app.database import Base
 from app.live_runner import (
     execute_anomaly_check,
+    execute_ml_retrain,
     execute_paper_rebalance,
     get_or_create_strategy_run,
     record_daily_equity_snapshot,
@@ -31,6 +32,17 @@ def session_factory(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path}/live_runner_test.db", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_macro_fetch(monkeypatch):
+    """execute_paper_rebalance/execute_ml_retrain both call
+    alpha_engine.data.macro.get_macro_data(), which hits a real network
+    endpoint (FRED) -- keep these tests hermetic the same way broker
+    calls are already stubbed via _patch_broker_client. Autouse since
+    almost every test in this file exercises one of those two paths.
+    """
+    monkeypatch.setattr("app.live_runner.get_macro_data", lambda: pd.DataFrame())
 
 
 def _strategy_kwargs(**overrides) -> dict:
@@ -341,4 +353,44 @@ def test_record_daily_equity_snapshot_swallows_broker_errors(session_factory, mo
     run = db.query(Run).filter_by(strategy_id=strategy_id).one()
     assert run.error_message is None  # reserved for trading failures, not this
     assert db.query(EquityPoint).filter_by(run_id=run.id).count() == 0
+    db.close()
+
+
+def test_execute_ml_retrain_is_a_noop_for_strategy_without_ml_alpha(session_factory, monkeypatch):
+    strategy_id = _make_strategy_id(session_factory, config_overrides_json="{}")
+    calls = []
+    monkeypatch.setattr("app.live_runner._retrain_ml_alpha_model", lambda strategy: calls.append(strategy.id))
+
+    execute_ml_retrain(strategy_id, session_factory=session_factory)
+
+    assert calls == []
+
+
+def test_execute_ml_retrain_calls_retrain_for_ml_alpha_strategy(session_factory, monkeypatch):
+    strategy_id = _make_strategy_id(
+        session_factory, config_overrides_json='{"signal_weights.ml_alpha": 0.35}'
+    )
+    calls = []
+    monkeypatch.setattr("app.live_runner._retrain_ml_alpha_model", lambda strategy: calls.append(strategy.id))
+
+    execute_ml_retrain(strategy_id, session_factory=session_factory)
+
+    assert calls == [strategy_id]
+
+
+def test_execute_ml_retrain_swallows_errors(session_factory, monkeypatch):
+    strategy_id = _make_strategy_id(
+        session_factory, config_overrides_json='{"signal_weights.ml_alpha": 0.35}'
+    )
+
+    def _raise(strategy):
+        raise RuntimeError("lightgbm blew up")
+
+    monkeypatch.setattr("app.live_runner._retrain_ml_alpha_model", _raise)
+
+    execute_ml_retrain(strategy_id, session_factory=session_factory)  # must not raise
+
+    db = session_factory()
+    run_count = db.query(Run).filter_by(strategy_id=strategy_id).count()
+    assert run_count == 0  # execute_ml_retrain never touches the Run table at all
     db.close()

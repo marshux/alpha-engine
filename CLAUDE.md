@@ -196,6 +196,20 @@ pip (via `PYTHONPATH`) to bootstrap a real pip into a `python3 -m venv
 that is normal (`pip install -e ".[dev]"`). If `.venv` is ever deleted, redo
 that bootstrap rather than assuming `python3 -m venv` alone will work.
 
+The `ml` extra (`lightgbm`, `hmmlearn` -- see `alpha_engine/ml/` and
+`decision/regime.py`) needs `libgomp.so.1` (the OpenMP runtime both
+link against), which isn't present on this machine and can't be `apt-get
+install`ed without root. Same no-root workaround as above: a vendored
+copy lives at `.venv/lib_extra/libgomp.so.1` (`apt-get download libgomp1`
++ `dpkg-deb -x`), and any command exercising `ml`-extra code locally needs
+`LD_LIBRARY_PATH="$PWD/.venv/lib_extra:$LD_LIBRARY_PATH"` set first, e.g.:
+```
+LD_LIBRARY_PATH="$PWD/.venv/lib_extra:$LD_LIBRARY_PATH" .venv/bin/python3 -m pytest tests/test_ml_alpha.py
+```
+This is a local-sandbox-only workaround, not something the app depends on
+-- the deployed image (`web/backend/Dockerfile`) just `apt-get install`s
+`libgomp1` for real, since it has actual root.
+
 ## Testing
 
 ```

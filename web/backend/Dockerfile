@@ -14,9 +14,14 @@ FROM python:3.11-slim AS runtime
 WORKDIR /app
 
 # alpha_engine's own dependencies (pandas/numpy/matplotlib) need these to
-# build/run on a slim base image.
+# build/run on a slim base image. libgomp1 is the OpenMP runtime
+# lightgbm's and hmmlearn's (via scipy) compiled extensions link against
+# -- without it, importing alpha_engine.ml.alpha_model or
+# alpha_engine.decision.regime fails at import time with
+# "OSError: libgomp.so.1: cannot open shared object file".
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
@@ -31,7 +36,7 @@ COPY web/backend/ ./web/backend/
 # config/universe.yaml then gets looked up under
 # /usr/local/lib/python3.11/config/ instead of /app/config/. -e keeps
 # __file__ pointing at /app/src/alpha_engine/..., matching local dev.
-RUN pip install --no-cache-dir -e ".[web,live]"
+RUN pip install --no-cache-dir -e ".[web,live,ml]"
 
 # Built frontend lands at web/backend/static -- see STATIC_DIR in
 # web/backend/app/main.py, which serves it (with SPA-route fallback to

@@ -20,6 +20,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.jobs.tasks import (
     daily_anomaly_check,
     daily_equity_snapshot,
+    monthly_ml_retrain,
     nightly_cache_refresh,
     weekly_auto_backtest,
     weekly_paper_rebalance,
@@ -47,6 +48,17 @@ def start_scheduler() -> None:
         weekly_auto_backtest,
         CronTrigger(day_of_week="sun", hour=3, minute=0),
         id="weekly_auto_backtest",
+        replace_existing=True,
+    )
+    # Pure research/training (no broker calls) -- not gated by
+    # ENABLE_LIVE_TRADING, same reasoning as nightly_cache_refresh/
+    # weekly_auto_backtest above. A no-op run (no strategy weights
+    # ml_alpha yet) is cheap -- just a DB query, see
+    # jobs/tasks.py::_ml_alpha_strategy_ids.
+    scheduler.add_job(
+        monthly_ml_retrain,
+        CronTrigger(day="1", hour=4, minute=0),
+        id="monthly_ml_retrain",
         replace_existing=True,
     )
     if ENABLE_LIVE_TRADING:

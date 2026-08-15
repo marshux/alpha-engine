@@ -16,14 +16,32 @@ breached and only get acted on at the next rebalance.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from alpha_engine.backtest.costs import turnover_cost
-from alpha_engine.decision.portfolio import build_portfolio
+from alpha_engine.decision.portfolio import build_portfolio, scale_gross_exposure
 from alpha_engine.decision.risk import regime_is_risk_on, stopped_out_positions
 from alpha_engine.decision.scorer import combine_scores
-from alpha_engine.signals import ai_theme, mean_reversion, momentum, quality, value, volatility
+from alpha_engine.ml.features import build_ml_features
+from alpha_engine.signals import (
+    ai_theme,
+    earnings_revision,
+    insider_buying,
+    mean_reversion,
+    momentum,
+    quality,
+    short_interest,
+    value,
+    volatility,
+)
+
+if TYPE_CHECKING:
+    # Deferred at runtime (see the regime.mode == "hmm" branch below) so a
+    # plain backtest-only install (no `ml` extra: lightgbm/hmmlearn) never
+    # pays for this import unless a strategy actually opts into it.
+    from alpha_engine.ml.alpha_model import AlphaModel
 
 SIGNAL_MODULES = {
     "momentum": momentum,
@@ -43,6 +61,7 @@ class BacktestResult:
     equity_curve: pd.Series
     weights_history: dict[pd.Timestamp, pd.Series] = field(default_factory=dict)
     turnover_history: dict[pd.Timestamp, float] = field(default_factory=dict)
+    regime_history: dict[pd.Timestamp, str] = field(default_factory=dict)
 
 
 def rebalance_dates(all_dates: pd.DatetimeIndex, cadence: str) -> pd.DatetimeIndex:
@@ -80,6 +99,10 @@ def run_backtest(
     end: pd.Timestamp | None = None,
     benchmark_prices: pd.DataFrame | None = None,
     theme_weights: dict[str, float] | None = None,
+    macro_data: pd.DataFrame | None = None,
+    ml_model: "AlphaModel | None" = None,
+    short_interest_data: dict[str, pd.DataFrame] | None = None,
+    insider_transactions: dict[str, pd.DataFrame] | None = None,
 ) -> BacktestResult:
     """`sector_map`, if provided: symbol -> sector name (config/sectors.yaml),
     used for the portfolio's sector-exposure cap.
@@ -98,10 +121,37 @@ def run_backtest(
     start; slicing `prices` per-window would do exactly that.
 
     `benchmark_prices`, if provided together with `strategy_config["regime"]
-    ["enabled"]`: OHLCV for the trend/regime filter (decision.risk.
-    regime_is_risk_on) -- when the benchmark is below its own trailing
-    moving average, the portfolio holds cash regardless of what individual
-    stock signals say, until the benchmark recovers above it again.
+    ["enabled"]`: OHLCV for the regime filter. `strategy_config["regime"]
+    ["mode"]` selects which filter: `"trend_filter"` (default -- unset is
+    treated the same) is the original Faber-style binary filter
+    (decision.risk.regime_is_risk_on) -- when the benchmark is below its
+    own trailing moving average, the portfolio holds cash regardless of
+    what individual stock signals say, until the benchmark recovers above
+    it again. `"hmm"` uses decision.regime's 4-state HMM classifier
+    instead: a continuous gross-exposure scalar (decision.portfolio.
+    scale_gross_exposure) rather than an all-or-nothing flatten, plus
+    regime-adaptive signal-weight overrides for that period only -- see
+    decision/regime.py's module docstring. `"hmm"` mode additionally needs
+    `macro_data`; without it (or without `benchmark_prices`), it silently
+    degrades to full exposure/no override rather than failing, same
+    "missing data degrades gracefully" posture as everywhere else. Every
+    date `evaluate_regime` actually runs on is recorded in the returned
+    `BacktestResult.regime_history` (label only, not the exposure/weight
+    values -- those are recoverable from `weights_history` instead) --
+    diagnostic use, e.g. auditing mean gross exposure per regime. The
+    circuit breaker and stop-loss below are unaffected by `regime.mode` --
+    both remain in force regardless.
+
+    `strategy_config["risk"]["reduce_drawdown_pct"]`, if set: an opt-in
+    intermediate drawdown tier between "normal" and the circuit breaker's
+    binary HALT (`risk.max_drawdown_pct`) -- once drawdown from the
+    running peak crosses this (shallower) threshold, exposure is scaled
+    by `risk.reduce_exposure_scale` (default 0.5) instead of doing
+    nothing until HALT fires. Unset by default (`None`), which is a
+    complete no-op -- existing strategies that never set it get
+    byte-identical behavior. If `regime.mode == "hmm"` is also active in
+    the same period, the two exposure signals combine via `min()` (the
+    more cautious of the two wins), not multiplicatively.
 
     `theme_weights`, if provided: symbol -> AI-exposure intensity
     (config/themes.yaml's `ai` mapping) -- adds the `ai_theme` signal
@@ -109,9 +159,39 @@ def run_backtest(
     concentration in tagged names is capped by
     `strategy_config["portfolio"]["max_theme_weight"]` if set (see
     decision/portfolio.apply_theme_cap).
+
+    `macro_data`, if provided: alpha_engine.data.macro.get_macro_data()'s
+    combined yield-curve/vix/credit-spread panel -- required for
+    `regime.mode == "hmm"` (see above) and forwarded into the `ml_alpha`
+    feature builder below when `ml_model` is also given.
+
+    `ml_model`, if provided: a fitted `alpha_engine.ml.alpha_model.
+    AlphaModel` -- adds an `ml_alpha` signal to the signal table for this
+    run (`signal_weights.ml_alpha` in strategy.yaml), gated exactly like
+    `value`/`quality` are gated on `fundamentals`. Callers are responsible
+    for fitting/loading the model appropriately for point-in-time safety
+    (backtest/walkforward.py fits one model per train window and reuses it
+    for that window's test evaluation; the web backend loads a model
+    retrained on a periodic schedule for live use) -- `run_backtest` itself
+    has no awareness of train/test windows or retrain schedules.
+
+    `short_interest_data`, if provided: symbol -> bi-weekly short-interest
+    DataFrame (data.short_interest.get_universe_short_interest) -- adds
+    the `short_interest` signal to the signal table. `insider_transactions`,
+    if provided: symbol -> open-market Form 4 transaction DataFrame
+    (data.insider.get_universe_insider_transactions) -- adds the
+    `insider_buying` signal. `earnings_revision` (PEAD proxy) is added
+    whenever both `fundamentals` and `benchmark_prices` are given, no
+    separate param needed. All three also feed the `ml_alpha` feature
+    builder when `ml_model` is given. None of the three are wired into
+    live/runner.py's `run_live_rebalance` (see that function's docstring)
+    -- a strategy weighting them will simply have those signals silently
+    score neutral (0) in live mode, same missing-signal handling as
+    everywhere else, not a special case.
     """
     sector_map = sector_map or {}
     regime_cfg = strategy_config.get("regime", {})
+    regime_mode = regime_cfg.get("mode", "trend_filter")
     all_dates = pd.DatetimeIndex(sorted(set().union(*(df.index for df in prices.values()))))
     dates = rebalance_dates(all_dates, strategy_config["rebalance"])
     if start is not None:
@@ -130,6 +210,7 @@ def run_backtest(
     equity_points: dict[pd.Timestamp, float] = {}
     weights_history: dict[pd.Timestamp, pd.Series] = {}
     turnover_history: dict[pd.Timestamp, float] = {}
+    regime_history: dict[pd.Timestamp, str] = {}
 
     prev_prices: dict[str, float] = {}
     has_prev = False
@@ -191,9 +272,25 @@ def run_backtest(
             prev_prices, has_prev = current_prices, True
             continue
 
+        # REDUCE tier: opt-in (risk.reduce_drawdown_pct unset -> stays 1.0,
+        # byte-identical to before this existed). An intermediate drawdown
+        # zone between "fine" and the HALT threshold above scales exposure
+        # down instead of doing nothing until HALT fires -- unlike HALT,
+        # no cooldown/flatten-to-cash: this just dampens the otherwise-
+        # normal portfolio, re-evaluated fresh every rebalance the same
+        # way the trend filter is.
+        risk_reduce_scale = 1.0
+        reduce_threshold = risk_cfg.get("reduce_drawdown_pct")
+        if reduce_threshold is not None and drawdown <= -reduce_threshold:
+            risk_reduce_scale = risk_cfg.get("reduce_exposure_scale", 0.5)
+
+        gross_exposure = 1.0
+        effective_signal_weights = signal_weights
+
         if (
-            benchmark_prices is not None
-            and regime_cfg.get("enabled", False)
+            regime_cfg.get("enabled", False)
+            and regime_mode == "trend_filter"
+            and benchmark_prices is not None
             and not regime_is_risk_on(benchmark_prices, as_of, regime_cfg["ma_window_days"])
         ):
             # Unlike the circuit breaker, no cooldown here -- re-evaluated
@@ -208,6 +305,25 @@ def run_backtest(
             turnover_history[as_of] = turnover
             prev_prices, has_prev = current_prices, True
             continue
+        elif regime_cfg.get("enabled", False) and regime_mode == "hmm":
+            # Continuous alternative to the binary trend filter above: no
+            # early `continue` here at all, even at low exposure -- the
+            # portfolio still gets built normally below, just scaled down
+            # (or, for a recognized weight override, tilted) rather than
+            # fully flattened. See decision/regime.py's module docstring.
+            if benchmark_prices is not None and macro_data is not None:
+                from alpha_engine.decision.regime import evaluate_regime, resolve_exposure_table
+
+                label, gross_exposure, weight_overrides = evaluate_regime(
+                    prices,
+                    benchmark_prices,
+                    macro_data,
+                    as_of,
+                    exposure_table=resolve_exposure_table(regime_cfg),
+                )
+                regime_history[as_of] = label
+                if weight_overrides is not None:
+                    effective_signal_weights = weight_overrides
 
         stopped = stopped_out_positions(entry_prices, current_prices, risk_cfg["stop_loss_pct"])
 
@@ -217,10 +333,30 @@ def run_backtest(
         if fundamentals is not None:
             signal_table["value"] = value.compute(prices, fundamentals, as_of)
             signal_table["quality"] = quality.compute(fundamentals, as_of)
+            if benchmark_prices is not None:
+                signal_table["earnings_revision"] = earnings_revision.compute(
+                    prices, fundamentals, benchmark_prices, as_of
+                )
         if theme_weights is not None:
             signal_table["ai_theme"] = ai_theme.compute(prices, as_of, theme_weights)
+        if short_interest_data is not None:
+            signal_table["short_interest"] = short_interest.compute(short_interest_data, as_of)
+        if insider_transactions is not None:
+            signal_table["insider_buying"] = insider_buying.compute(insider_transactions, as_of)
+        if ml_model is not None:
+            ml_features = build_ml_features(
+                prices,
+                fundamentals,
+                macro_data,
+                as_of,
+                list(prices.keys()),
+                benchmark_prices=benchmark_prices,
+                short_interest_data=short_interest_data,
+                insider_transactions=insider_transactions,
+            )
+            signal_table["ml_alpha"] = ml_model.predict(ml_features)
 
-        scores = combine_scores(signal_table, signal_weights)
+        scores = combine_scores(signal_table, effective_signal_weights)
         if stopped:
             scores = scores.drop(index=[s for s in stopped if s in scores.index])
 
@@ -244,6 +380,13 @@ def run_backtest(
         target_weights = build_portfolio(
             scores, sizing_data, sector_map=sector_map, config=portfolio_cfg, theme_map=theme_weights
         )
+        # Whichever of the two independent exposure signals (regime read,
+        # REDUCE-tier drawdown check) is more cautious wins -- taking the
+        # min avoids the two compounding multiplicatively into an
+        # unintentionally extreme combined cut.
+        effective_exposure = min(gross_exposure, risk_reduce_scale)
+        if effective_exposure != 1.0:
+            target_weights = scale_gross_exposure(target_weights, effective_exposure)
 
         turnover = weights.add(-target_weights, fill_value=0.0).abs().sum()
         equity -= turnover_cost(turnover, equity, cost_cfg)
@@ -265,4 +408,5 @@ def run_backtest(
         equity_curve=pd.Series(equity_points).sort_index(),
         weights_history=weights_history,
         turnover_history=turnover_history,
+        regime_history=regime_history,
     )

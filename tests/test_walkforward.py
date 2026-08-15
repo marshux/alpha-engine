@@ -159,3 +159,75 @@ def test_run_walk_forward_grid_search_picks_higher_train_sharpe_config():
         checked += 1
 
     assert checked > 0, "no window had enough history to compare -- test setup issue"
+
+
+def test_run_walk_forward_train_ml_alpha_fits_once_per_window_and_reuses_across_train_and_test(monkeypatch):
+    """Walk-forward safety for the ml_alpha signal: each window's model
+    must be fit ONLY on that window's own train range, and the exact same
+    fitted model (not a fresh one) must be what's used to score both the
+    train-range grid candidate and the out-of-sample test range -- never
+    a model that saw test-range data at fit time.
+    """
+    n = 500
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    b = _series_df(100 * (0.9995 ** np.arange(n)), n)
+    prices = {"A": a, "B": b}
+    benchmark = _series_df(100 * (1.0003 ** np.arange(n)), n)
+    all_dates = pd.DatetimeIndex(sorted(set(a.index) | set(b.index)))
+    windows = generate_windows(all_dates, train_years=0.5, test_years=0.25, step_years=0.25)
+    assert len(windows) > 0
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 1.0, "mean_reversion": 0.0, "volatility": 0.0, "ml_alpha": 0.0}
+    )
+
+    fit_calls: list[tuple] = []
+    from alpha_engine.ml import training as ml_training
+
+    real_build_training_set = ml_training.build_training_set
+
+    def spy_build_training_set(*args, **kwargs):
+        fit_calls.append((kwargs["train_start"], kwargs["train_end"]))
+        return real_build_training_set(*args, **kwargs)
+
+    monkeypatch.setattr("alpha_engine.ml.training.build_training_set", spy_build_training_set)
+
+    run_backtest_calls: list[tuple] = []
+    import alpha_engine.backtest.walkforward as wf_module
+
+    real_run_backtest = wf_module.run_backtest
+
+    def spy_run_backtest(*args, **kwargs):
+        run_backtest_calls.append((kwargs.get("start"), kwargs.get("end"), id(kwargs.get("ml_model"))))
+        return real_run_backtest(*args, **kwargs)
+
+    monkeypatch.setattr("alpha_engine.backtest.walkforward.run_backtest", spy_run_backtest)
+
+    # A trivial single-candidate grid so each window makes exactly one
+    # train-range run_backtest call plus one test-range call, both of
+    # which should carry the same model id.
+    results = run_walk_forward(
+        prices,
+        config,
+        windows,
+        param_grid={"portfolio.top_n": [1]},
+        benchmark_prices=benchmark,
+        train_ml_alpha=True,
+    )
+
+    assert len(results) == len(windows)
+    assert len(fit_calls) == len(windows)
+    for (train_start, train_end), window in zip(fit_calls, windows):
+        assert train_start == window.train_start
+        assert train_end == window.train_end
+
+    assert len(run_backtest_calls) == 2 * len(windows)
+    model_ids_per_window = []
+    for i in range(len(windows)):
+        train_call, test_call = run_backtest_calls[2 * i], run_backtest_calls[2 * i + 1]
+        assert train_call[2] == test_call[2], "train-range and test-range calls must share the same fitted model"
+        model_ids_per_window.append(train_call[2])
+
+    non_none_ids = [m for m in model_ids_per_window if m != id(None)]
+    assert non_none_ids, "no window produced a trained model -- test setup issue"
+    assert len(set(non_none_ids)) == len(non_none_ids), "each window must fit its own fresh model, never reuse another window's"

@@ -365,3 +365,356 @@ def test_metrics_cagr_and_drawdown_on_known_curve():
 
     flat = pd.Series([100.0, 100.0, 100.0], index=dates)
     assert metrics.sharpe_ratio(flat, periods_per_year=52) == 0.0
+
+
+def test_hmm_regime_mode_scales_exposure_continuously_not_binary(monkeypatch):
+    n = 300
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    prices = {"A": a}
+    benchmark_prices = _series_df(100 * (1.0005 ** np.arange(n)), n)
+    macro_data = pd.DataFrame(
+        {"yield_curve": 1.0, "vix": 15.0, "credit_spread": 3.0},
+        index=pd.bdate_range("2020-01-01", periods=n),
+    )
+
+    def fake_evaluate_regime(prices_, benchmark_prices_, macro_data_, as_of, **kwargs):
+        return ("BEAR_TREND", 0.4, None)
+
+    monkeypatch.setattr("alpha_engine.decision.regime.evaluate_regime", fake_evaluate_regime)
+
+    config = _base_strategy_config(
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+        regime={"enabled": True, "mode": "hmm", "ma_window_days": 20},
+    )
+
+    result = run_backtest(
+        prices, config["signal_weights"], config, benchmark_prices=benchmark_prices, macro_data=macro_data
+    )
+
+    dates = sorted(result.weights_history.keys())
+    last_nonempty = [d for d in dates if not result.weights_history[d].empty][-1]
+    # Scaled to the fake regime's 0.4 exposure -- not fully invested (1.0)
+    # and not flattened to cash (0.0), unlike the binary trend filter.
+    assert result.weights_history[last_nonempty]["A"] == pytest.approx(0.4)
+
+
+def test_hmm_regime_mode_applies_regime_weight_overrides(monkeypatch):
+    n = 300
+    # UP: strong uptrend (momentum favors it). FLAT: dead flat (mean
+    # reversion is indifferent, but momentum scores it far worse than UP).
+    up = _series_df(100 * (1.003 ** np.arange(n)), n)
+    flat = _series_df(np.full(n, 100.0), n)
+    prices = {"UP": up, "FLAT": flat}
+    benchmark_prices = _series_df(100 * (1.0005 ** np.arange(n)), n)
+    macro_data = pd.DataFrame(
+        {"yield_curve": 1.0, "vix": 15.0, "credit_spread": 3.0},
+        index=pd.bdate_range("2020-01-01", periods=n),
+    )
+
+    def fake_evaluate_regime(prices_, benchmark_prices_, macro_data_, as_of, **kwargs):
+        # Force weights entirely onto mean_reversion (momentum key absent
+        # -> excluded from combine_scores entirely, see decision/scorer.py).
+        return ("CRISIS", 1.0, {"mean_reversion": 1.0})
+
+    monkeypatch.setattr("alpha_engine.decision.regime.evaluate_regime", fake_evaluate_regime)
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 1.0, "mean_reversion": 0.0, "volatility": 0.0},
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+        regime={"enabled": True, "mode": "hmm", "ma_window_days": 20},
+    )
+
+    result = run_backtest(
+        prices, config["signal_weights"], config, benchmark_prices=benchmark_prices, macro_data=macro_data
+    )
+
+    dates = sorted(result.weights_history.keys())
+    last_nonempty = [d for d in dates if not result.weights_history[d].empty][-1]
+    # Under the base (momentum-only) weights UP would always win -- the
+    # override swapping in mean_reversion-only proves it was actually used.
+    assert list(result.weights_history[last_nonempty].index) != ["UP"]
+
+
+def test_hmm_regime_mode_records_regime_label_per_date(monkeypatch):
+    n = 300
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    prices = {"A": a}
+    benchmark_prices = _series_df(100 * (1.0005 ** np.arange(n)), n)
+    macro_data = pd.DataFrame(
+        {"yield_curve": 1.0, "vix": 15.0, "credit_spread": 3.0},
+        index=pd.bdate_range("2020-01-01", periods=n),
+    )
+
+    def fake_evaluate_regime(prices_, benchmark_prices_, macro_data_, as_of, **kwargs):
+        return ("BEAR_TREND", 0.4, None)
+
+    monkeypatch.setattr("alpha_engine.decision.regime.evaluate_regime", fake_evaluate_regime)
+
+    config = _base_strategy_config(
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+        regime={"enabled": True, "mode": "hmm", "ma_window_days": 20},
+    )
+
+    result = run_backtest(
+        prices, config["signal_weights"], config, benchmark_prices=benchmark_prices, macro_data=macro_data
+    )
+
+    assert result.regime_history
+    assert set(result.regime_history.values()) == {"BEAR_TREND"}
+
+
+def test_trend_filter_mode_leaves_regime_history_empty():
+    # regime_history is only populated in "hmm" mode -- the binary trend
+    # filter has no regime label concept, and this must stay a true no-op
+    # for strategies that never touch regime.mode at all (Traditional,
+    # Contrarian Volatility).
+    n = 300
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    prices = {"A": a}
+    benchmark_prices = _series_df(100 * (1.0005 ** np.arange(n)), n)
+
+    config = _base_strategy_config(
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+        regime={"enabled": True, "mode": "trend_filter", "ma_window_days": 20},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config, benchmark_prices=benchmark_prices)
+
+    assert result.regime_history == {}
+
+
+def test_hmm_regime_mode_without_macro_data_degrades_to_full_exposure():
+    n = 300
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    prices = {"A": a}
+    benchmark_prices = _series_df(100 * (1.0005 ** np.arange(n)), n)
+
+    config = _base_strategy_config(
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+        regime={"enabled": True, "mode": "hmm", "ma_window_days": 20},
+    )
+
+    # No macro_data passed -- hmm mode should degrade gracefully rather
+    # than error, same posture as every other missing-data case.
+    result = run_backtest(prices, config["signal_weights"], config, benchmark_prices=benchmark_prices)
+
+    dates = sorted(result.weights_history.keys())
+    last_nonempty = [d for d in dates if not result.weights_history[d].empty][-1]
+    assert result.weights_history[last_nonempty]["A"] == pytest.approx(1.0)
+
+
+def test_ml_model_signal_participates_in_scoring():
+    n = 300
+    up = _series_df(100 * (1.001 ** np.arange(n)), n)
+    down = _series_df(100 * (0.999 ** np.arange(n)), n)
+    prices = {"UP": up, "DOWN": down}
+
+    class _FakeMlModel:
+        def predict(self, X):
+            return pd.Series({sym: (1.0 if sym == "DOWN" else -1.0) for sym in X.index})
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 0.0, "mean_reversion": 0.0, "volatility": 0.0, "ml_alpha": 1.0},
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config, ml_model=_FakeMlModel())
+
+    dates = sorted(result.weights_history.keys())
+    last_nonempty = [d for d in dates if not result.weights_history[d].empty][-1]
+    # DOWN only wins because the fake model favors it -- momentum/mean
+    # reversion would both favor UP, so this proves ml_alpha actually
+    # participated in scoring, not just got computed and ignored.
+    assert list(result.weights_history[last_nonempty].index) == ["DOWN"]
+
+
+def test_reduce_tier_scales_exposure_at_intermediate_drawdown():
+    n = 300
+    # Flat, then a moderate ~10% decline -- crosses a 5% REDUCE threshold
+    # but stays well under the (deliberately very high) HALT threshold.
+    closes = np.concatenate([np.full(150, 100.0), np.linspace(100.0, 90.0, n - 150)])
+    prices = {"A": _series_df(closes, n)}
+    config = _base_strategy_config(
+        risk={
+            "stop_loss_pct": 0.99,
+            "max_drawdown_pct": 0.99,
+            "reduce_drawdown_pct": 0.05,
+            "reduce_exposure_scale": 0.4,
+        },
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config)
+
+    dates = sorted(result.weights_history.keys())
+    assert result.weights_history[dates[-1]]["A"] == pytest.approx(0.4)
+
+
+def test_reduce_tier_disabled_by_default_ignores_drawdown():
+    n = 300
+    closes = np.concatenate([np.full(150, 100.0), np.linspace(100.0, 90.0, n - 150)])
+    prices = {"A": _series_df(closes, n)}
+    config = _base_strategy_config(
+        risk={"stop_loss_pct": 0.99, "max_drawdown_pct": 0.99},  # no reduce_drawdown_pct at all
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config)
+
+    dates = sorted(result.weights_history.keys())
+    assert result.weights_history[dates[-1]]["A"] == pytest.approx(1.0)
+
+
+def test_reduce_tier_combines_with_hmm_regime_via_min(monkeypatch):
+    n = 300
+    closes = np.concatenate([np.full(150, 100.0), np.linspace(100.0, 90.0, n - 150)])
+    prices = {"A": _series_df(closes, n)}
+    benchmark_prices = _series_df(100 * (1.0005 ** np.arange(n)), n)
+    macro_data = pd.DataFrame(
+        {"yield_curve": 1.0, "vix": 15.0, "credit_spread": 3.0}, index=pd.bdate_range("2020-01-01", periods=n)
+    )
+
+    def fake_evaluate_regime(prices_, benchmark_prices_, macro_data_, as_of, **kwargs):
+        return ("BULL_TREND", 0.9, None)  # regime alone would only cut to 0.9
+
+    monkeypatch.setattr("alpha_engine.decision.regime.evaluate_regime", fake_evaluate_regime)
+
+    config = _base_strategy_config(
+        risk={
+            "stop_loss_pct": 0.99,
+            "max_drawdown_pct": 0.99,
+            "reduce_drawdown_pct": 0.05,
+            "reduce_exposure_scale": 0.3,  # REDUCE is the more cautious of the two
+        },
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+        regime={"enabled": True, "mode": "hmm", "ma_window_days": 20},
+    )
+
+    result = run_backtest(
+        prices, config["signal_weights"], config, benchmark_prices=benchmark_prices, macro_data=macro_data
+    )
+
+    dates = sorted(result.weights_history.keys())
+    # min(0.9, 0.3) == 0.3 -- REDUCE wins, not a 0.9*0.3 compound.
+    assert result.weights_history[dates[-1]]["A"] == pytest.approx(0.3)
+
+
+def test_short_interest_signal_participates_in_scoring(monkeypatch):
+    n = 300
+    prices = {"UP": _series_df(100 * (1.001 ** np.arange(n)), n), "DOWN": _series_df(100 * (0.999 ** np.arange(n)), n)}
+
+    monkeypatch.setattr(
+        "alpha_engine.signals.short_interest.compute",
+        lambda short_interest_data, as_of: pd.Series({"UP": -1.0, "DOWN": 1.0}),
+    )
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 0.0, "mean_reversion": 0.0, "volatility": 0.0, "short_interest": 1.0},
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config, short_interest_data={"UP": pd.DataFrame(), "DOWN": pd.DataFrame()})
+
+    dates = sorted(result.weights_history.keys())
+    last_nonempty = [d for d in dates if not result.weights_history[d].empty][-1]
+    # DOWN only wins because the fake short_interest signal favors it --
+    # momentum favors UP, proving short_interest actually drove selection.
+    assert list(result.weights_history[last_nonempty].index) == ["DOWN"]
+
+
+def test_insider_buying_signal_participates_in_scoring(monkeypatch):
+    n = 300
+    prices = {"UP": _series_df(100 * (1.001 ** np.arange(n)), n), "DOWN": _series_df(100 * (0.999 ** np.arange(n)), n)}
+
+    monkeypatch.setattr(
+        "alpha_engine.signals.insider_buying.compute",
+        lambda insider_transactions, as_of: pd.Series({"UP": -1.0, "DOWN": 1.0}),
+    )
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 0.0, "mean_reversion": 0.0, "volatility": 0.0, "insider_buying": 1.0},
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config, insider_transactions={"UP": pd.DataFrame(), "DOWN": pd.DataFrame()})
+
+    dates = sorted(result.weights_history.keys())
+    last_nonempty = [d for d in dates if not result.weights_history[d].empty][-1]
+    assert list(result.weights_history[last_nonempty].index) == ["DOWN"]
+
+
+def test_earnings_revision_signal_added_when_fundamentals_and_benchmark_given(monkeypatch):
+    n = 300
+    prices = {"UP": _series_df(100 * (1.001 ** np.arange(n)), n), "DOWN": _series_df(100 * (0.999 ** np.arange(n)), n)}
+    benchmark_prices = _series_df(100 * (1.0005 ** np.arange(n)), n)
+    fundamentals = {
+        "UP": pd.DataFrame({"Stockholders Equity": [100.0]}, index=pd.to_datetime(["2020-01-01"])),
+        "DOWN": pd.DataFrame({"Stockholders Equity": [100.0]}, index=pd.to_datetime(["2020-01-01"])),
+    }
+
+    monkeypatch.setattr(
+        "alpha_engine.signals.earnings_revision.compute",
+        lambda prices_, fundamentals_, benchmark_prices_, as_of: pd.Series({"UP": -1.0, "DOWN": 1.0}),
+    )
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 0.0, "mean_reversion": 0.0, "volatility": 0.0, "earnings_revision": 1.0},
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    result = run_backtest(
+        prices, config["signal_weights"], config, fundamentals=fundamentals, benchmark_prices=benchmark_prices
+    )
+
+    dates = sorted(result.weights_history.keys())
+    last_nonempty = [d for d in dates if not result.weights_history[d].empty][-1]
+    assert list(result.weights_history[last_nonempty].index) == ["DOWN"]
+
+
+def test_earnings_revision_not_added_without_benchmark_prices():
+    n = 300
+    prices = {"A": _series_df(100 * (1.001 ** np.arange(n)), n)}
+    fundamentals = {"A": pd.DataFrame({"Stockholders Equity": [100.0]}, index=pd.to_datetime(["2020-01-01"]))}
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 0.0, "mean_reversion": 0.0, "volatility": 0.0, "earnings_revision": 1.0},
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    # No benchmark_prices given -- earnings_revision weight is nonzero but
+    # the signal never gets added to signal_table, so it's silently
+    # excluded from scoring (combine_scores' missing-signal handling)
+    # rather than raising.
+    result = run_backtest(prices, config["signal_weights"], config, fundamentals=fundamentals)
+
+    assert result.equity_curve is not None  # completes without error
+
+
+def test_ml_features_receive_new_signal_inputs_when_ml_model_given():
+    n = 300
+    prices = {"A": _series_df(100 * (1.001 ** np.arange(n)), n)}
+    benchmark_prices = _series_df(100 * (1.0005 ** np.arange(n)), n)
+    captured_columns = []
+
+    class _CapturingMlModel:
+        def predict(self, X):
+            captured_columns.append(set(X.columns))
+            return pd.Series({s: 0.0 for s in X.index})
+
+    config = _base_strategy_config(
+        signal_weights={"momentum": 1.0, "mean_reversion": 0.0, "volatility": 0.0},
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    run_backtest(
+        prices,
+        config["signal_weights"],
+        config,
+        benchmark_prices=benchmark_prices,
+        ml_model=_CapturingMlModel(),
+        short_interest_data={"A": pd.DataFrame()},
+        insider_transactions={"A": pd.DataFrame()},
+    )
+
+    assert len(captured_columns) > 0
+    assert {"earnings_revision", "short_interest", "insider_buying"} <= captured_columns[0]

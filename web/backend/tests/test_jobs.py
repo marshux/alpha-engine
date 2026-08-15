@@ -120,12 +120,38 @@ def test_daily_equity_snapshot_runs_only_enabled_strategies(monkeypatch, tmp_pat
     assert calls == [enabled_id]
 
 
+def test_monthly_ml_retrain_runs_only_ml_alpha_strategies_regardless_of_enabled(monkeypatch, tmp_path):
+    session_factory = _sqlite_session_factory(tmp_path)
+    db = session_factory()
+    ml_strategy = Strategy(
+        **_strategy_kwargs(
+            name="ml_strategy", enabled=False, config_overrides_json='{"signal_weights.ml_alpha": 0.35}'
+        )
+    )
+    plain_strategy = Strategy(**_strategy_kwargs(name="plain_strategy", enabled=True, config_overrides_json="{}"))
+    db.add_all([ml_strategy, plain_strategy])
+    db.commit()
+    ml_id = ml_strategy.id
+    db.close()
+    monkeypatch.setattr(tasks, "SessionLocal", session_factory)
+
+    calls = []
+    monkeypatch.setattr(tasks, "execute_ml_retrain", lambda strategy_id: calls.append(strategy_id))
+
+    tasks.monthly_ml_retrain()
+
+    # ml_strategy is disabled but weights ml_alpha -- it should still get
+    # retrained (validation runs need fresh models too). plain_strategy is
+    # enabled but doesn't weight ml_alpha -- never called.
+    assert calls == [ml_id]
+
+
 def test_scheduler_registers_core_jobs_without_live_trading(monkeypatch):
     monkeypatch.setattr(scheduler_module, "ENABLE_LIVE_TRADING", False)
     start_scheduler()
     try:
         job_ids = {job.id for job in scheduler.get_jobs()}
-        assert job_ids == {"nightly_cache_refresh", "weekly_auto_backtest"}
+        assert job_ids == {"nightly_cache_refresh", "weekly_auto_backtest", "monthly_ml_retrain"}
     finally:
         stop_scheduler()
 
@@ -138,6 +164,7 @@ def test_scheduler_registers_paper_rebalance_when_live_trading_enabled(monkeypat
         assert job_ids == {
             "nightly_cache_refresh",
             "weekly_auto_backtest",
+            "monthly_ml_retrain",
             "weekly_paper_rebalance",
             "daily_anomaly_check",
             "daily_equity_snapshot",

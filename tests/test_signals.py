@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from alpha_engine.signals import mean_reversion, momentum, volatility
 
@@ -84,6 +85,56 @@ def test_zscore_output_is_cross_sectionally_centered():
     scores = momentum.compute(prices, as_of=up.index[-1])
 
     assert abs(scores.mean()) < 1e-9
+
+
+def test_compute_beta_favors_higher_beta_name():
+    n = 280
+    rng = np.random.default_rng(7)
+    bench_returns = rng.normal(0.0005, 0.01, n)
+    bench_closes = 100 * np.cumprod(1 + bench_returns)
+    benchmark = _series_df(bench_closes, n)
+
+    # HIGH tracks the benchmark 2x, LOW tracks it 0.3x -- both plus a
+    # little idiosyncratic noise so they aren't perfectly collinear.
+    idio = rng.normal(0, 0.002, n)
+    high_closes = 100 * np.cumprod(1 + 2.0 * bench_returns + idio)
+    low_closes = 100 * np.cumprod(1 + 0.3 * bench_returns + idio)
+    prices = {"HIGH": _series_df(high_closes, n), "LOW": _series_df(low_closes, n)}
+
+    betas = volatility.compute_beta(prices, benchmark, as_of=benchmark.index[-1], window=200)
+
+    assert betas["HIGH"] > betas["LOW"]
+    assert betas["LOW"] < 1.0
+    assert betas["HIGH"] > 1.0
+
+
+def test_compute_beta_skips_insufficient_history():
+    n = 40  # shorter than the default 252-day window
+    a = _series_df(np.full(n, 100.0), n)
+    bench = _series_df(np.full(n, 100.0), n)
+    betas = volatility.compute_beta({"A": a}, bench, as_of=a.index[-1])
+    assert betas.empty
+
+
+def test_portfolio_beta_is_weighted_average():
+    weights = pd.Series({"A": 0.6, "B": 0.4})
+    betas = pd.Series({"A": 1.5, "B": 0.5})
+    result = volatility.portfolio_beta(weights, betas)
+    assert result == pytest.approx(0.6 * 1.5 + 0.4 * 0.5)
+
+
+def test_portfolio_beta_excludes_symbols_with_no_beta():
+    weights = pd.Series({"A": 0.5, "B": 0.5})
+    betas = pd.Series({"A": 1.0})  # B has no beta available
+    result = volatility.portfolio_beta(weights, betas)
+    assert result == pytest.approx(1.0)  # renormalized over A alone, not diluted by B
+
+
+def test_portfolio_beta_nan_when_nothing_overlaps():
+    weights = pd.Series({"A": 1.0})
+    betas = pd.Series({"B": 1.0})
+    result = volatility.portfolio_beta(weights, betas)
+    assert pd.isna(result)
 
 
 def test_trailing_returns_matrix_shape_and_window():

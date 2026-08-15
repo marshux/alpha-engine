@@ -9,6 +9,7 @@ const POLL_INTERVAL_MS = 15_000;
 const RISK_TIER_STYLES: Record<string, string> = {
   traditional: "bg-sky-900 text-sky-300",
   aggressive: "bg-red-900 text-red-300",
+  systematic: "bg-violet-900 text-violet-300",
 };
 
 function RiskTierBadge({ tier }: { tier: string }) {

@@ -54,6 +54,63 @@ def test_select_top_n():
     assert list(top2.index) == ["A", "C"]
 
 
+def test_resolve_top_n_uses_fixed_count_when_top_n_pct_absent():
+    scores = pd.Series({s: 0.0 for s in "ABCDEFGHIJ"})  # 10 symbols
+    assert portfolio.resolve_top_n(scores, {"top_n": 3}) == 3
+
+
+def test_resolve_top_n_uses_ratio_of_live_universe_when_configured():
+    scores = pd.Series({s: 0.0 for s in range(63)})  # 63 symbols, this repo's actual universe size
+    assert portfolio.resolve_top_n(scores, {"top_n_pct": 0.10}) == 6  # int(63 * 0.10) == 6
+
+
+def test_resolve_top_n_ratio_respects_floor():
+    scores = pd.Series({s: 0.0 for s in range(10)})
+    assert portfolio.resolve_top_n(scores, {"top_n_pct": 0.10, "top_n_min": 5}) == 5  # int(10*0.10)=1, floored to 5
+
+
+def test_resolve_top_n_ratio_respects_ceiling():
+    scores = pd.Series({s: 0.0 for s in range(500)})
+    config = {"top_n_pct": 0.10, "top_n_min": 10, "top_n_max": 30}
+    assert portfolio.resolve_top_n(scores, config) == 30  # int(500*0.10)=50, capped to 30
+
+
+def test_resolve_top_n_no_ceiling_when_top_n_max_absent():
+    scores = pd.Series({s: 0.0 for s in range(500)})
+    assert portfolio.resolve_top_n(scores, {"top_n_pct": 0.10, "top_n_min": 10}) == 50
+
+
+def test_resolve_top_n_200_universe_lands_in_the_healthy_range():
+    # This repo's actual expanded universe size (config/universe.yaml) --
+    # the exact scenario systematic_core_action_plan.md targeted.
+    scores = pd.Series({s: 0.0 for s in range(204)})
+    config = {"top_n_pct": 0.10, "top_n_min": 10, "top_n_max": 30}
+    assert portfolio.resolve_top_n(scores, config) == 20
+
+
+def test_resolve_top_n_ratio_scales_with_universe_size():
+    small = pd.Series({s: 0.0 for s in range(63)})
+    large = pd.Series({s: 0.0 for s in range(500)})
+    config = {"top_n_pct": 0.10, "top_n_min": 5}
+    assert portfolio.resolve_top_n(small, config) == 6
+    assert portfolio.resolve_top_n(large, config) == 50  # matches the guide's own n_long=50-of-500 ratio
+
+
+def test_build_portfolio_uses_ratio_based_top_n_end_to_end():
+    scores = pd.Series({s: float(i) for i, s in enumerate("ABCDEFGHIJ")})  # 10 symbols, ranked 0..9
+    config = {
+        "sizing": "equal_weight",
+        "top_n_pct": 0.30,
+        "max_position_weight": 1.0,
+        "max_sector_weight": 1.0,
+    }
+
+    weights = portfolio.build_portfolio(scores, None, sector_map={}, config=config)
+
+    assert len(weights) == 3  # int(10 * 0.30) == 3
+    assert set(weights.index) == {"H", "I", "J"}  # the 3 highest-scored symbols
+
+
 def test_size_positions_equal_weight():
     selected = pd.Series({"A": 3.0, "B": 2.0})
     weights = portfolio.size_positions(selected, None, "equal_weight", max_position_weight=1.0)
@@ -297,3 +354,22 @@ def test_modulate_theme_cap_clips_to_bounds():
         0.35, sentiment=-1.0, confidence=1.0, sensitivity=10.0, min_weight=0.15, max_weight=0.50
     )
     assert result == 0.15
+
+
+def test_scale_gross_exposure_full_exposure_is_a_no_op():
+    weights = pd.Series({"AAA": 0.3, "BBB": 0.2})
+    result = portfolio.scale_gross_exposure(weights, 1.0)
+    pd.testing.assert_series_equal(result, weights)
+
+
+def test_scale_gross_exposure_scales_down_and_leaves_remainder_as_cash():
+    weights = pd.Series({"AAA": 0.3, "BBB": 0.2})
+    result = portfolio.scale_gross_exposure(weights, 0.5)
+    pd.testing.assert_series_equal(result, pd.Series({"AAA": 0.15, "BBB": 0.1}))
+    assert result.sum() < weights.sum()
+
+
+def test_scale_gross_exposure_zero_flattens_to_all_cash():
+    weights = pd.Series({"AAA": 0.3, "BBB": 0.2})
+    result = portfolio.scale_gross_exposure(weights, 0.0)
+    assert (result == 0.0).all()
