@@ -21,7 +21,13 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from alpha_engine.backtest.costs import turnover_cost
-from alpha_engine.decision.portfolio import build_portfolio, scale_gross_exposure
+from alpha_engine.decision.portfolio import (
+    build_portfolio,
+    capping_diagnostics,
+    resolve_top_n,
+    scale_gross_exposure,
+    select_top_n,
+)
 from alpha_engine.decision.risk import regime_is_risk_on, stopped_out_positions
 from alpha_engine.decision.scorer import combine_scores
 from alpha_engine.ml.features import build_ml_features
@@ -62,6 +68,7 @@ class BacktestResult:
     weights_history: dict[pd.Timestamp, pd.Series] = field(default_factory=dict)
     turnover_history: dict[pd.Timestamp, float] = field(default_factory=dict)
     regime_history: dict[pd.Timestamp, str] = field(default_factory=dict)
+    capping_history: dict[pd.Timestamp, dict] = field(default_factory=dict)
 
 
 def rebalance_dates(all_dates: pd.DatetimeIndex, cadence: str) -> pd.DatetimeIndex:
@@ -211,6 +218,7 @@ def run_backtest(
     weights_history: dict[pd.Timestamp, pd.Series] = {}
     turnover_history: dict[pd.Timestamp, float] = {}
     regime_history: dict[pd.Timestamp, str] = {}
+    capping_history: dict[pd.Timestamp, dict] = {}
 
     prev_prices: dict[str, float] = {}
     has_prev = False
@@ -377,6 +385,10 @@ def run_backtest(
             sizing_data = volatility.trailing_returns_matrix(prices, list(prices.keys()), as_of)
             scores = scores[scores.index.isin(sizing_data.columns)]
 
+        selected = select_top_n(scores, resolve_top_n(scores, portfolio_cfg))
+        capping_history[as_of] = capping_diagnostics(
+            selected, sizing_data, portfolio_cfg["sizing"], portfolio_cfg["max_position_weight"]
+        )
         target_weights = build_portfolio(
             scores, sizing_data, sector_map=sector_map, config=portfolio_cfg, theme_map=theme_weights
         )
@@ -409,4 +421,5 @@ def run_backtest(
         weights_history=weights_history,
         turnover_history=turnover_history,
         regime_history=regime_history,
+        capping_history=capping_history,
     )

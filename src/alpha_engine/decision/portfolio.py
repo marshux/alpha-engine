@@ -78,11 +78,91 @@ def _min_variance_weights(returns: pd.DataFrame) -> pd.Series:
     return weights / total
 
 
+def _compute_raw_weights(
+    selected: pd.Series,
+    volatility: pd.Series | pd.DataFrame | None,
+    sizing: str,
+) -> pd.Series:
+    """The pre-cap sizing pass shared by `size_positions` and
+    `capping_diagnostics` -- factored out so the diagnostic can inspect
+    what capping actually threw away without duplicating the sizing math
+    (and risking the two drifting out of sync).
+    """
+    n = len(selected)
+    if n == 0:
+        return pd.Series(dtype=float)
+
+    if sizing == "equal_weight":
+        return pd.Series(1.0 / n, index=selected.index)
+    elif sizing == "volatility_scaled":
+        if volatility is None or not isinstance(volatility, pd.Series):
+            raise ValueError("volatility series required for volatility_scaled sizing")
+        vol = volatility.reindex(selected.index)
+        if vol.isna().any() or (vol <= 0).any():
+            raise ValueError(
+                "volatility_scaled sizing requires positive volatility for every selected symbol"
+            )
+        inv_vol = 1.0 / vol
+        return inv_vol / inv_vol.sum()
+    elif sizing == "min_variance":
+        if volatility is None or not isinstance(volatility, pd.DataFrame):
+            raise ValueError("returns DataFrame required for min_variance sizing")
+        returns = volatility.reindex(columns=selected.index)
+        if returns.isna().any().any():
+            raise ValueError(
+                "min_variance sizing requires return history for every selected symbol"
+            )
+        return _min_variance_weights(returns)
+    else:
+        raise ValueError(f"unknown sizing method: {sizing}")
+
+
+def _redistribute_excess(raw: pd.Series, max_position_weight: float, max_iterations: int = 10) -> pd.Series:
+    """Iteratively push each capped position's excess weight onto the
+    positions that haven't been capped yet, proportional to their current
+    weight, instead of leaving it as cash. A single redistribution pass
+    can push a previously-uncapped position over the cap itself, so this
+    repeats until nothing new gets capped (in practice 2-3 rounds) or
+    `max_iterations` is hit, at which point whatever's left is clipped
+    defensively.
+
+    Once a position is capped it's *permanently* excluded from receiving
+    further redistribution, even if a later round's math would otherwise
+    land more weight on it -- capped means "at its ceiling," not "eligible
+    for more." Without this, a position sitting exactly at the cap could
+    be treated as fair game again next round, immediately breach the cap,
+    and need re-capping in an unstable cycle instead of monotonically
+    converging.
+
+    If every position ends up capped, there's nowhere left to redistribute
+    into and any final residual stays as cash -- a real structural ceiling
+    (`n * max_position_weight < 1.0`), not a bug.
+    """
+    weights = raw.copy()
+    permanently_capped = pd.Series(False, index=weights.index)
+    for _ in range(max_iterations):
+        newly_capped = (weights > max_position_weight) & ~permanently_capped
+        if not newly_capped.any():
+            break
+        excess = (weights[newly_capped] - max_position_weight).sum()
+        weights[newly_capped] = max_position_weight
+        permanently_capped |= newly_capped
+        eligible = ~permanently_capped
+        eligible_total = weights[eligible].sum()
+        if eligible_total <= 0:
+            break
+        weights[eligible] += excess * (weights[eligible] / eligible_total)
+    else:
+        weights = weights.clip(upper=max_position_weight)
+    return weights
+
+
 def size_positions(
     selected: pd.Series,
     volatility: pd.Series | pd.DataFrame | None,
     sizing: str,
     max_position_weight: float,
+    redistribute_capped_excess: bool = False,
 ) -> pd.Series:
     """Target weights (summing to <=1.0) for the selected symbols.
 
@@ -97,41 +177,52 @@ def size_positions(
       carries a different shape depending on `sizing` rather than adding a
       second parameter, so the call site (backtest/engine.py) stays simple;
       see `signals/volatility.trailing_returns_matrix` for how it's built.
-    All three are capped at `max_position_weight`. Since raw weights already
-    sum to 1.0 before capping, capping can only reduce the total -- any
-    capital freed up by the cap is deliberately left as cash rather than
-    redistributed to other positions, which keeps sizing simple and fully
-    deterministic at the cost of sometimes being under-invested.
+    All three are capped at `max_position_weight`. By default, since raw
+    weights already sum to 1.0 before capping, capping can only reduce the
+    total -- capital freed up by the cap is left as cash rather than
+    redistributed, which keeps sizing simple and fully deterministic at
+    the cost of sometimes being under-invested (see `capping_diagnostics`
+    to measure how much this actually costs -- on Systematic Core's
+    config, ~14% of the portfolio on average, ~15% in BULL_TREND
+    specifically; see systematic_core_findings_v4.md's Action plan v4,
+    Finding 1). `redistribute_capped_excess=True` opts into
+    `_redistribute_excess` instead: capped excess flows to the other
+    selected positions rather than sitting idle. Off by default so
+    existing strategies (Traditional, Contrarian Volatility) get zero
+    behavior change unless they explicitly turn it on via
+    `portfolio.redistribute_capped_excess: true`.
     """
-    n = len(selected)
-    if n == 0:
+    if len(selected) == 0:
         return pd.Series(dtype=float)
-
-    if sizing == "equal_weight":
-        raw = pd.Series(1.0 / n, index=selected.index)
-    elif sizing == "volatility_scaled":
-        if volatility is None or not isinstance(volatility, pd.Series):
-            raise ValueError("volatility series required for volatility_scaled sizing")
-        vol = volatility.reindex(selected.index)
-        if vol.isna().any() or (vol <= 0).any():
-            raise ValueError(
-                "volatility_scaled sizing requires positive volatility for every selected symbol"
-            )
-        inv_vol = 1.0 / vol
-        raw = inv_vol / inv_vol.sum()
-    elif sizing == "min_variance":
-        if volatility is None or not isinstance(volatility, pd.DataFrame):
-            raise ValueError("returns DataFrame required for min_variance sizing")
-        returns = volatility.reindex(columns=selected.index)
-        if returns.isna().any().any():
-            raise ValueError(
-                "min_variance sizing requires return history for every selected symbol"
-            )
-        raw = _min_variance_weights(returns)
-    else:
-        raise ValueError(f"unknown sizing method: {sizing}")
-
+    raw = _compute_raw_weights(selected, volatility, sizing)
+    if redistribute_capped_excess:
+        return _redistribute_excess(raw, max_position_weight)
     return raw.clip(upper=max_position_weight)
+
+
+def capping_diagnostics(
+    selected: pd.Series,
+    volatility: pd.Series | pd.DataFrame | None,
+    sizing: str,
+    max_position_weight: float,
+) -> dict:
+    """How much of `size_positions`'s cap-driven cash drag (see its
+    docstring) is happening for this one selection -- diagnostic only,
+    not used anywhere in the live decision path. Returns
+    `{"n_capped": int, "excess_weight": float}`: `n_capped` is how many
+    selected symbols' raw (pre-cap) weight exceeded `max_position_weight`;
+    `excess_weight` is the total weight trapped by those caps (raw sum
+    minus clipped sum) -- exactly the amount left as cash by this step
+    alone, before any downstream sector/theme/regime adjustment.
+    """
+    if len(selected) == 0:
+        return {"n_capped": 0, "excess_weight": 0.0}
+    raw = _compute_raw_weights(selected, volatility, sizing)
+    clipped = raw.clip(upper=max_position_weight)
+    return {
+        "n_capped": int((raw > max_position_weight).sum()),
+        "excess_weight": float(raw.sum() - clipped.sum()),
+    }
 
 
 def apply_sector_cap(
@@ -238,7 +329,11 @@ def build_portfolio(
 ) -> pd.Series:
     selected = select_top_n(scores, resolve_top_n(scores, config))
     weights = size_positions(
-        selected, volatility, config["sizing"], config["max_position_weight"]
+        selected,
+        volatility,
+        config["sizing"],
+        config["max_position_weight"],
+        redistribute_capped_excess=config.get("redistribute_capped_excess", False),
     )
     weights = apply_sector_cap(weights, sector_map, config["max_sector_weight"])
     if theme_map and "max_theme_weight" in config:

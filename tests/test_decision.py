@@ -140,6 +140,79 @@ def test_size_positions_caps_leave_excess_as_cash():
     assert weights.sum() == pytest.approx(0.6)
 
 
+def test_capping_diagnostics_matches_the_known_excess():
+    selected = pd.Series({"A": 1.0, "B": 1.0, "C": 1.0})
+    diag = portfolio.capping_diagnostics(selected, None, "equal_weight", max_position_weight=0.2)
+    # same setup as test_size_positions_caps_leave_excess_as_cash: raw 1/3
+    # each vs 0.2 cap -> all 3 capped, 0.4 total excess trapped as cash
+    assert diag["n_capped"] == 3
+    assert diag["excess_weight"] == pytest.approx(0.4)
+
+
+def test_capping_diagnostics_reports_zero_when_nothing_is_capped():
+    selected = pd.Series({"A": 1.0, "B": 1.0})
+    diag = portfolio.capping_diagnostics(selected, None, "equal_weight", max_position_weight=0.9)
+    assert diag["n_capped"] == 0
+    assert diag["excess_weight"] == pytest.approx(0.0)
+
+
+def test_capping_diagnostics_empty_selection():
+    diag = portfolio.capping_diagnostics(pd.Series(dtype=float), None, "equal_weight", max_position_weight=0.2)
+    assert diag == {"n_capped": 0, "excess_weight": 0.0}
+
+
+class TestRedistributeCappedExcess:
+    def test_default_is_off_and_matches_uncapped_behavior(self):
+        selected = pd.Series({"A": 1.0, "B": 1.0, "C": 1.0})
+        weights = portfolio.size_positions(selected, None, "equal_weight", max_position_weight=0.2)
+        assert weights.sum() == pytest.approx(0.6)  # unchanged from the non-redistributing default
+
+    def test_single_capped_position_redistributes_fully_when_others_have_room(self):
+        # vol-scaled raw: A=0.6667, B=0.1667, C=0.1667 (inv_vol 20/5/5).
+        # cap=0.4 -> A capped, its 0.2667 excess splits evenly onto B/C
+        # (equal current weight), landing both at 0.3 -- under the cap,
+        # so it converges in one round with the full 1.0 invested, none
+        # left as cash.
+        selected = pd.Series({"A": 1.0, "B": 1.0, "C": 1.0})
+        vol = pd.Series({"A": 0.05, "B": 0.2, "C": 0.2})
+        weights = portfolio.size_positions(
+            selected, vol, "volatility_scaled", max_position_weight=0.4, redistribute_capped_excess=True
+        )
+        assert weights["A"] == pytest.approx(0.4)
+        assert weights["B"] == pytest.approx(0.3)
+        assert weights["C"] == pytest.approx(0.3)
+        assert weights.sum() == pytest.approx(1.0)
+
+    def test_cascading_caps_converge_to_the_structural_ceiling(self):
+        # Heavily skewed raw weights (inv_vol 50/10/2) -> redistributing
+        # A's excess pushes B over the cap too, then C -- three rounds of
+        # cascading caps. cap=0.3 with n=3 means 0.9 is the hard ceiling
+        # regardless of the original skew, so all three should converge
+        # to exactly the cap with 0.1 left unallocated.
+        selected = pd.Series({"A": 1.0, "B": 1.0, "C": 1.0})
+        vol = pd.Series({"A": 0.02, "B": 0.1, "C": 0.5})
+        weights = portfolio.size_positions(
+            selected, vol, "volatility_scaled", max_position_weight=0.3, redistribute_capped_excess=True
+        )
+        assert weights["A"] == pytest.approx(0.3)
+        assert weights["B"] == pytest.approx(0.3)
+        assert weights["C"] == pytest.approx(0.3)
+        assert weights.sum() == pytest.approx(0.9)  # 3 * 0.3, the real structural ceiling
+
+    def test_build_portfolio_honors_the_config_flag(self):
+        scores = pd.Series({"A": 3.0, "B": 2.0, "C": 1.0})
+        vol = pd.Series({"A": 0.05, "B": 0.2, "C": 0.2})
+        config = {
+            "top_n": 3,
+            "sizing": "volatility_scaled",
+            "max_position_weight": 0.4,
+            "max_sector_weight": 1.0,
+            "redistribute_capped_excess": True,
+        }
+        weights = portfolio.build_portfolio(scores, vol, sector_map={}, config=config)
+        assert weights.sum() == pytest.approx(1.0)
+
+
 def test_size_positions_below_cap_is_unaffected():
     selected = pd.Series({"A": 1.0, "B": 1.0})
     weights = portfolio.size_positions(

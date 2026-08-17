@@ -483,6 +483,25 @@ def test_trend_filter_mode_leaves_regime_history_empty():
     assert result.regime_history == {}
 
 
+def test_capping_history_records_excess_weight_from_a_tight_cap():
+    n = 300
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    b = _series_df(100 * (1.0005 ** np.arange(n)), n)
+    prices = {"A": a, "B": b}
+
+    config = _base_strategy_config(
+        portfolio={"top_n": 2, "max_position_weight": 0.2, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config)
+
+    assert result.capping_history
+    # equal_weight on 2 selected -> 0.5 each, both above the 0.2 cap
+    last = sorted(result.capping_history)[-1]
+    assert result.capping_history[last]["n_capped"] == 2
+    assert result.capping_history[last]["excess_weight"] == pytest.approx(0.6)
+
+
 def test_hmm_regime_mode_without_macro_data_degrades_to_full_exposure():
     n = 300
     a = _series_df(100 * (1.001 ** np.arange(n)), n)
