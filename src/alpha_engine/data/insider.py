@@ -34,6 +34,7 @@ run.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -351,6 +352,12 @@ def _get_json(url: str, params: dict) -> dict:
             last_error = e
             if e.response is not None and e.response.status_code < 500:
                 raise  # a 4xx won't be fixed by retrying
+            print(
+                f"RETRY_5XX: search-index status={e.response.status_code if e.response is not None else '?'} "
+                f"attempt={attempt + 1}/{MAX_RETRIES}",
+                file=sys.stderr,
+                flush=True,
+            )
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
     raise last_error
@@ -370,6 +377,12 @@ def _get_text(url: str) -> str:
             last_error = e
             if e.response is not None and e.response.status_code < 500:
                 raise
+            print(
+                f"RETRY_5XX: filing-doc status={e.response.status_code if e.response is not None else '?'} "
+                f"attempt={attempt + 1}/{MAX_RETRIES}",
+                file=sys.stderr,
+                flush=True,
+            )
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
     raise last_error
