@@ -483,6 +483,64 @@ def test_trend_filter_mode_leaves_regime_history_empty():
     assert result.regime_history == {}
 
 
+def test_trend_filter_scaled_reduces_but_does_not_flatten_exposure():
+    n = 300
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    prices = {"A": a}
+    # same downtrend/recovery fixture as the binary trend_filter test
+    benchmark_closes = np.concatenate(
+        [
+            np.linspace(100.0, 150.0, 100),
+            np.linspace(150.0, 80.0, 100),
+            np.linspace(80.0, 160.0, 100),
+        ]
+    )
+    benchmark_prices = _series_df(benchmark_closes, n)
+
+    config = _base_strategy_config(
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+        regime={"enabled": True, "mode": "trend_filter_scaled", "ma_window_days": 20, "risk_off_exposure": 0.6},
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config, benchmark_prices=benchmark_prices)
+
+    dates = sorted(result.weights_history.keys())
+    downtrend_dates = [d for d in dates if benchmark_prices.index[130] <= d <= benchmark_prices.index[190]]
+    recovery_dates = [d for d in dates if d >= benchmark_prices.index[260]]
+
+    assert downtrend_dates, "test setup issue: no rebalance dates fell in the downtrend window"
+    assert recovery_dates, "test setup issue: no rebalance dates fell in the recovery window"
+    # scaled down to 0.6, not flattened to empty like the binary trend_filter
+    for d in downtrend_dates:
+        assert not result.weights_history[d].empty
+        assert result.weights_history[d]["A"] == pytest.approx(0.6)
+        assert result.regime_history[d] == "RISK_OFF"
+    for d in recovery_dates:
+        assert result.weights_history[d]["A"] == pytest.approx(1.0)
+        assert result.regime_history[d] == "RISK_ON"
+
+
+def test_trend_filter_scaled_defaults_risk_off_exposure_to_0_6():
+    n = 300
+    a = _series_df(100 * (1.001 ** np.arange(n)), n)
+    prices = {"A": a}
+    benchmark_closes = np.concatenate(
+        [np.linspace(100.0, 150.0, 100), np.linspace(150.0, 80.0, 100), np.linspace(80.0, 160.0, 100)]
+    )
+    benchmark_prices = _series_df(benchmark_closes, n)
+
+    config = _base_strategy_config(
+        portfolio={"top_n": 1, "max_position_weight": 1.0, "max_sector_weight": 1.0, "sizing": "equal_weight"},
+        regime={"enabled": True, "mode": "trend_filter_scaled", "ma_window_days": 20},  # no risk_off_exposure set
+    )
+
+    result = run_backtest(prices, config["signal_weights"], config, benchmark_prices=benchmark_prices)
+
+    downtrend_date = benchmark_prices.index[160]
+    matching = [d for d in result.weights_history if d <= downtrend_date][-1]
+    assert result.weights_history[matching]["A"] == pytest.approx(0.6)
+
+
 def test_capping_history_records_excess_weight_from_a_tight_cap():
     n = 300
     a = _series_df(100 * (1.001 ** np.arange(n)), n)

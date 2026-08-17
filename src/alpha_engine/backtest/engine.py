@@ -141,10 +141,18 @@ def run_backtest(
     decision/regime.py's module docstring. `"hmm"` mode additionally needs
     `macro_data`; without it (or without `benchmark_prices`), it silently
     degrades to full exposure/no override rather than failing, same
-    "missing data degrades gracefully" posture as everywhere else. Every
-    date `evaluate_regime` actually runs on is recorded in the returned
-    `BacktestResult.regime_history` (label only, not the exposure/weight
-    values -- those are recoverable from `weights_history` instead) --
+    "missing data degrades gracefully" posture as everywhere else.
+    `"trend_filter_scaled"` is the same binary above/below-moving-average
+    signal as `"trend_filter"`, but scales exposure to
+    `regime.risk_off_exposure` (default 0.6) instead of fully flattening --
+    for a strategy whose regime overlay is meant to stay independent of
+    another strategy's own regime mechanism (e.g. a momentum strategy
+    blended alongside an HMM-driven one). Records `"RISK_ON"`/`"RISK_OFF"`
+    into `regime_history`. Every date `evaluate_regime` (or the
+    `trend_filter_scaled` check) actually runs on is recorded in the
+    returned `BacktestResult.regime_history` (label only, not the
+    exposure/weight values -- those are recoverable from `weights_history`
+    instead) --
     diagnostic use, e.g. auditing mean gross exposure per regime. The
     circuit breaker and stop-loss below are unaffected by `regime.mode` --
     both remain in force regardless.
@@ -332,6 +340,21 @@ def run_backtest(
                 regime_history[as_of] = label
                 if weight_overrides is not None:
                     effective_signal_weights = weight_overrides
+        elif regime_cfg.get("enabled", False) and regime_mode == "trend_filter_scaled":
+            # Same Faber-style binary signal as "trend_filter" (benchmark
+            # above/below its own trailing moving average), but continuous
+            # exposure scaling instead of a full flatten -- for a strategy
+            # whose regime overlay is deliberately meant to not move in
+            # lockstep with another strategy's own regime mechanism (e.g.
+            # a momentum strategy blended alongside an HMM-driven one:
+            # both retreating for the same reason at the same time gives
+            # the blend no diversification benefit). `regime.risk_off_exposure`
+            # (default 0.6) sets the reduced-but-not-zero exposure level
+            # used when the trend signal is risk-off.
+            if benchmark_prices is not None:
+                risk_on = regime_is_risk_on(benchmark_prices, as_of, regime_cfg["ma_window_days"])
+                gross_exposure = 1.0 if risk_on else regime_cfg.get("risk_off_exposure", 0.6)
+                regime_history[as_of] = "RISK_ON" if risk_on else "RISK_OFF"
 
         stopped = stopped_out_positions(entry_prices, current_prices, risk_cfg["stop_loss_pct"])
 
