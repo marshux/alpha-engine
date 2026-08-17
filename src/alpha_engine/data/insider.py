@@ -34,6 +34,7 @@ run.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -50,7 +51,13 @@ TICKER_CIK_URL = "https://www.sec.gov/files/company_tickers.json"
 USER_AGENT = "alpha-engine-research contact@alpha-engine.local"
 
 OPEN_MARKET_CODES = {"P", "S"}  # purchase, sale -- excludes grants/exercises/gifts/etc.
-REQUEST_PAUSE_SECONDS = 0.15  # stay comfortably under SEC's fair-access rate guidance
+# ~8.5 req/sec aggregate (1/0.1176) -- comfortably under SEC's ~10 req/sec
+# fair-access guidance, and the only knob that determines request rate (see
+# _throttle() below): with the backfill driver's modest thread pool, this
+# is what makes concurrency worth it, since a single thread's own per-
+# request overhead (parsing, etc.) wouldn't otherwise saturate a cap this
+# tight. Set to 0 to disable pacing entirely (tests do this).
+REQUEST_PAUSE_SECONDS = 0.1176
 
 # Manual overrides for symbols where SEC's live ticker->CIK mapping
 # (`_load_ticker_to_cik_map`) resolves to the wrong entity -- specifically,
@@ -148,7 +155,6 @@ def _search_form4_filings(symbol: str, start_date: str, end_date: str) -> list[d
         if len(page_hits) < 10:
             break
         page_from += 10
-        time.sleep(REQUEST_PAUSE_SECONDS)
     return hits
 
 
@@ -219,7 +225,6 @@ def get_insider_transactions(
             rows.extend(_parse_form4_xml(xml_text, symbol))
         except Exception:
             continue
-        time.sleep(REQUEST_PAUSE_SECONDS)
 
     if not rows:
         df = pd.DataFrame(columns=["code", "shares"])
@@ -263,14 +268,17 @@ def get_universe_insider_transactions(
     (fetch failures, no filings) are skipped rather than failing the
     whole batch -- same pattern as data.equities.get_universe_prices.
 
-    A pause between symbols (not just between pages within one symbol's
-    search) -- found in practice that a large-cap company with hundreds
-    of Form 4 filings can page through enough requests back-to-back that
-    immediately starting the next symbol's search looks like a burst to
-    SEC's search-index endpoint specifically, triggering transient 500s
-    (confirmed: retrying the exact same query moments later succeeded).
-    The per-page pause inside `_search_form4_filings` alone wasn't
-    enough; this closes the gap between symbols too.
+    No explicit pause between symbols here -- `_throttle()` (see its
+    docstring) already enforces the minimum request interval globally,
+    at the level of every individual `_get_json`/`_get_text` call, so a
+    new symbol's first request is paced against the previous symbol's
+    last request exactly the same as any two requests within one symbol's
+    own search. This is what originally motivated a per-symbol pause here
+    (found in practice that a large-cap company's hundreds of back-to-back
+    paginated requests could make the next symbol's very first request
+    look like a burst to SEC's search-index endpoint, triggering transient
+    500s -- confirmed: retrying moments later succeeded) -- centralizing
+    the throttle covers that case without a separate sleep.
     """
     out: dict[str, pd.DataFrame] = {}
     for symbol in symbols:
@@ -280,12 +288,45 @@ def get_universe_insider_transactions(
             continue
         if not df.empty:
             out[symbol] = df
-        time.sleep(REQUEST_PAUSE_SECONDS)
     return out
 
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 2.0
+
+_rate_limit_lock = threading.Lock()
+_next_request_not_before = 0.0
+
+
+def _throttle() -> None:
+    """Block the calling thread until it's safe to issue the next SEC
+    request, enforcing a minimum REQUEST_PAUSE_SECONDS interval between the
+    *start* of any two requests -- globally, across every thread, not just
+    within one. This is the thread-safe generalization of the old "sleep
+    after each call" pattern that used to live at each individual call
+    site (`_search_form4_filings`'s page loop, `get_insider_transactions`'s
+    per-filing loop, `get_universe_insider_transactions`'s per-symbol
+    loop): centralizing it here, called once at the top of every actual
+    HTTP attempt in `_get_json`/`_get_text` (retries included), means
+    callers -- including a `ThreadPoolExecutor` mapping over multiple
+    symbols concurrently -- never need to know pacing exists at all; the
+    cap is enforced no matter how many threads are issuing requests.
+
+    With exactly one caller thread this reduces to the same 1/REQUEST_PAUSE_SECONDS
+    ceiling the old per-call-site sleeps produced. REQUEST_PAUSE_SECONDS <= 0
+    disables it entirely (skips the lock too) -- same escape hatch
+    tests/test_insider.py already relies on.
+    """
+    if REQUEST_PAUSE_SECONDS <= 0:
+        return
+    global _next_request_not_before
+    with _rate_limit_lock:
+        now = time.monotonic()
+        wait = _next_request_not_before - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+        _next_request_not_before = now + REQUEST_PAUSE_SECONDS
 
 
 def _get_json(url: str, params: dict) -> dict:
@@ -302,6 +343,7 @@ def _get_json(url: str, params: dict) -> dict:
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
+            _throttle()
             response = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=30)
             response.raise_for_status()
             return response.json()
@@ -320,6 +362,7 @@ def _get_text(url: str) -> str:
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
+            _throttle()
             response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
             response.raise_for_status()
             return response.text
