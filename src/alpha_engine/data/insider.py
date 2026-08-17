@@ -52,13 +52,17 @@ TICKER_CIK_URL = "https://www.sec.gov/files/company_tickers.json"
 USER_AGENT = "alpha-engine-research contact@alpha-engine.local"
 
 OPEN_MARKET_CODES = {"P", "S"}  # purchase, sale -- excludes grants/exercises/gifts/etc.
-# ~8.5 req/sec aggregate (1/0.1176) -- comfortably under SEC's ~10 req/sec
-# fair-access guidance, and the only knob that determines request rate (see
-# _throttle() below): with the backfill driver's modest thread pool, this
-# is what makes concurrency worth it, since a single thread's own per-
-# request overhead (parsing, etc.) wouldn't otherwise saturate a cap this
-# tight. Set to 0 to disable pacing entirely (tests do this).
-REQUEST_PAUSE_SECONDS = 0.1176
+# ~6.67 req/sec (1/0.15) -- comfortably under SEC's ~10 req/sec fair-access
+# guidance. This briefly ran at 0.1176 (~8.5 req/sec) alongside a 3-worker
+# thread pool (see _throttle() below for the mechanism, which is unrelated
+# to this constant and unchanged); reverted back to 0.15 out of caution
+# after a cluster-detection guardrail killed that run ~3 minutes in on 3
+# failed/500-class events within a 5-minute window (mixed signature -- one
+# was an unrelated DNS resolution blip, two were genuine SEC-side 500s) --
+# genuinely unclear whether the tighter interval contributed, so the
+# tighter value isn't worth the uncertainty for a job that runs unattended
+# for days. Set to 0 to disable pacing entirely (tests do this).
+REQUEST_PAUSE_SECONDS = 0.15
 
 # Manual overrides for symbols where SEC's live ticker->CIK mapping
 # (`_load_ticker_to_cik_map`) resolves to the wrong entity -- specifically,
