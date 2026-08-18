@@ -30,7 +30,8 @@ MIN_ORDER_NOTIONAL = 1.0
 class Order:
     symbol: str
     side: OrderSide
-    notional: float  # dollar amount, always positive
+    notional: float  # dollar amount, always positive -- informational for full closes, see is_full_close
+    is_full_close: bool = False
 
 
 def get_client(api_key: str | None = None, secret_key: str | None = None) -> TradingClient:
@@ -93,6 +94,19 @@ def compute_orders(
     intentionally implemented here, not in decision/portfolio.py, so the
     backtested decision layer's weights stay untouched by this
     live-execution-only concern.
+
+    A position going to a target of exactly zero (dropped from
+    `target_weights`, or every position flattened) is flagged
+    `is_full_close=True` rather than sized as a notional sell for the
+    position's last-known `market_value`. A notional sell for "the full
+    market value as of the last position snapshot" is a real race: if the
+    price ticks down even slightly before the order fills, Alpaca resolves
+    that notional into a share count that can exceed what's actually still
+    held (observed directly in production -- a $0.014-share, ~0.07%
+    overshoot rejected the order outright). `submit_orders` routes
+    full-close orders through Alpaca's own close-position endpoint
+    instead, which closes on Alpaca's live-quantity accounting rather than
+    a dollar figure computed from a stale snapshot.
     """
     symbols = set(positions.keys()) | set(target_weights.index)
     deployable = equity * (1.0 - cash_buffer_pct)
@@ -105,7 +119,8 @@ def compute_orders(
         if abs(delta) < MIN_ORDER_NOTIONAL:
             continue
         side = OrderSide.BUY if delta > 0 else OrderSide.SELL
-        orders.append(Order(symbol=symbol, side=side, notional=round(abs(delta), 2)))
+        is_full_close = side == OrderSide.SELL and target_dollars == 0.0 and symbol in positions
+        orders.append(Order(symbol=symbol, side=side, notional=round(abs(delta), 2), is_full_close=is_full_close))
     return orders
 
 
@@ -118,19 +133,27 @@ def submit_orders(client: TradingClient, orders: list[Order]) -> list[dict]:
     submitting buys -- a known v1 simplification, consistent with treating
     order submission as the audit record rather than building a full
     fill-reconciliation state machine (see live/runner.py's docstring).
+
+    Orders flagged `is_full_close` (see `compute_orders`) go through
+    Alpaca's close-position endpoint instead of a notional market order --
+    avoids the stale-notional-vs-live-quantity race that a dollar-sized
+    "sell the whole position" order is exposed to.
     """
     sells = [o for o in orders if o.side == OrderSide.SELL]
     buys = [o for o in orders if o.side == OrderSide.BUY]
 
     submitted = []
     for order in sells + buys:
-        request = MarketOrderRequest(
-            symbol=order.symbol,
-            notional=order.notional,
-            side=order.side,
-            time_in_force=TimeInForce.DAY,
-        )
-        result = client.submit_order(request)
+        if order.is_full_close:
+            result = client.close_position(order.symbol)
+        else:
+            request = MarketOrderRequest(
+                symbol=order.symbol,
+                notional=order.notional,
+                side=order.side,
+                time_in_force=TimeInForce.DAY,
+            )
+            result = client.submit_order(request)
         submitted.append(
             {
                 "symbol": order.symbol,

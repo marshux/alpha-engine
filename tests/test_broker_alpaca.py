@@ -29,6 +29,29 @@ def test_compute_orders_sells_position_dropped_from_target():
     assert by_symbol["MSFT"].notional == 4900.0  # 0.5 * (10000 * 0.98)
 
 
+def test_compute_orders_flags_dropped_position_as_full_close():
+    positions = {"AAPL": {"qty": 10.0, "avg_entry_price": 100.0, "market_value": 1000.0}}
+    target_weights = pd.Series({"MSFT": 0.5})
+
+    orders = broker.compute_orders(target_weights, positions, equity=10_000.0, cash_buffer_pct=0.02)
+
+    by_symbol = {o.symbol: o for o in orders}
+    assert by_symbol["AAPL"].is_full_close is True
+    assert by_symbol["MSFT"].is_full_close is False  # a buy, never a full close
+
+
+def test_compute_orders_does_not_flag_partial_reduction_as_full_close():
+    # AAPL is held and still in target_weights, just at a smaller weight --
+    # a trim, not a full exit, so must not route through close_position.
+    positions = {"AAPL": {"qty": 10.0, "avg_entry_price": 100.0, "market_value": 1000.0}}
+    target_weights = pd.Series({"AAPL": 0.05})  # 0.05 * 9800 = $490, well below current $1000
+
+    orders = broker.compute_orders(target_weights, positions, equity=10_000.0, cash_buffer_pct=0.02)
+
+    assert orders[0].side == OrderSide.SELL
+    assert orders[0].is_full_close is False
+
+
 def test_compute_orders_skips_position_already_at_target():
     positions = {"MSFT": {"qty": 10.0, "avg_entry_price": 400.0, "market_value": 4900.0}}
     target_weights = pd.Series({"MSFT": 0.5})
@@ -105,6 +128,37 @@ def test_submit_orders_uses_notional_market_orders():
     assert captured[0].symbol == "AAPL"
     assert captured[0].notional == 123.45
     assert captured[0].qty is None
+
+
+def test_submit_orders_routes_full_close_through_close_position():
+    client = MagicMock()
+    client.close_position.return_value = _FakeSubmittedOrder(id="99", status="accepted")
+
+    submitted = broker.submit_orders(
+        client, [Order(symbol="LIN", side=OrderSide.SELL, notional=1000.0, is_full_close=True)]
+    )
+
+    client.close_position.assert_called_once_with("LIN")
+    client.submit_order.assert_not_called()
+    assert submitted == [
+        {"symbol": "LIN", "side": "sell", "notional": 1000.0, "alpaca_order_id": "99", "status": "accepted"}
+    ]
+
+
+def test_submit_orders_full_close_and_partial_orders_both_present():
+    client = MagicMock()
+    client.close_position.return_value = _FakeSubmittedOrder(id="1", status="accepted")
+    client.submit_order.return_value = _FakeSubmittedOrder(id="2", status="accepted")
+
+    orders = [
+        Order(symbol="LIN", side=OrderSide.SELL, notional=1000.0, is_full_close=True),
+        Order(symbol="MSFT", side=OrderSide.BUY, notional=500.0),
+    ]
+    submitted = broker.submit_orders(client, orders)
+
+    assert client.close_position.call_count == 1
+    assert client.submit_order.call_count == 1
+    assert [o["symbol"] for o in submitted] == ["LIN", "MSFT"]
 
 
 def test_flatten_all_calls_close_all_positions_with_cancel_orders():
