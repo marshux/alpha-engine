@@ -135,3 +135,65 @@ class TestComputeMeanIc:
         )
 
         assert result == {"mean_ic": 0.0, "ic_std": 0.0, "ic_ir": 0.0, "n_periods": 0, "passes": False}
+
+
+class TestComputeSignalIc:
+    def test_runs_and_returns_expected_shape(self):
+        prices = _synthetic_prices()
+        benchmark = _synthetic_benchmark()
+        all_dates = benchmark.index
+
+        def fake_signal(as_of):
+            # deterministic per-date scores, unrelated to actual forward
+            # returns -- just needs a real, non-trivial cross-section
+            rng = np.random.RandomState(hash(as_of) % (2**31))
+            return pd.Series(rng.normal(0, 1, len(prices)), index=list(prices.keys()))
+
+        result = validation.compute_signal_ic(
+            fake_signal, prices, benchmark_prices=benchmark,
+            validation_start=all_dates[100], validation_end=all_dates[300],
+            cadence="weekly", forward_days=21,
+        )
+
+        assert set(result.keys()) == {"mean_ic", "ic_std", "ic_ir", "n_periods", "passes"}
+        assert result["n_periods"] > 0
+        assert -1.0 <= result["mean_ic"] <= 1.0
+        assert result["passes"] == (result["mean_ic"] >= validation.MIN_IC_THRESHOLD)
+
+    def test_signal_derived_from_actual_forward_returns_scores_strongly_positive(self):
+        # a signal that "cheats" by scoring symbols using their own actual
+        # forward return should show strong positive IC -- confirms the
+        # measurement direction/plumbing is correct, not just that it runs.
+        prices = _synthetic_prices()
+        benchmark = _synthetic_benchmark()
+        symbols = list(prices.keys())
+        all_dates = benchmark.index
+
+        def oracle_signal(as_of):
+            from alpha_engine.ml.training import forward_excess_return
+            values = {}
+            for s in symbols:
+                fwd = forward_excess_return(prices, benchmark, s, as_of, 21)
+                if fwd is not None:
+                    values[s] = fwd
+            return pd.Series(values, dtype=float)
+
+        result = validation.compute_signal_ic(
+            oracle_signal, prices, benchmark_prices=benchmark,
+            validation_start=all_dates[100], validation_end=all_dates[300],
+            cadence="weekly", forward_days=21,
+        )
+
+        assert result["mean_ic"] > 0.9  # near-perfect, same value scored against itself
+
+    def test_dates_with_empty_signal_are_skipped_not_counted(self):
+        prices = _synthetic_prices()
+        benchmark = _synthetic_benchmark()
+        all_dates = benchmark.index
+
+        result = validation.compute_signal_ic(
+            lambda as_of: pd.Series(dtype=float), prices, benchmark_prices=benchmark,
+            validation_start=all_dates[100], validation_end=all_dates[300], cadence="weekly",
+        )
+
+        assert result == {"mean_ic": 0.0, "ic_std": 0.0, "ic_ir": 0.0, "n_periods": 0, "passes": False}

@@ -7,8 +7,21 @@ trusting it in a composite score -- this was never actually checked for
 analysis: an unvalidated, feature-poor ML signal was flagged as one
 likely contributor to Systematic Core's underperformance). These
 functions close that gap.
+
+`compute_signal_ic` (below `compute_mean_ic`) applies the same gate to a
+plain cross-sectional signal directly, not just the ml_alpha model's
+predictions -- every prior signal added to this codebase (momentum,
+value, quality, earnings_revision, short_interest, insider_buying) was
+integrated without its own standalone IC ever actually being measured;
+only ml_alpha's composite-model IC had real gating infrastructure. Added
+for systematic_core_action_plan (4).md's new-signal validation
+(short_interest_velocity, and later congress_trading/earnings_sentiment),
+which need this same discipline applied per-signal, not just at the
+model level.
 """
 from __future__ import annotations
+
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -89,6 +102,52 @@ def compute_mean_ic(
             {s: forward_excess_return(prices, benchmark_prices, s, as_of, forward_days) for s in preds.index}
         ).dropna()
         ics.append(compute_ic(preds, fwd_returns))
+
+    ics_arr = np.array(ics, dtype=float)
+    mean_ic = float(ics_arr.mean()) if len(ics_arr) else 0.0
+    ic_std = float(ics_arr.std()) if len(ics_arr) else 0.0
+    ic_ir = float(mean_ic / ic_std) if ic_std > 0 else 0.0
+
+    return {
+        "mean_ic": mean_ic,
+        "ic_std": ic_std,
+        "ic_ir": ic_ir,
+        "n_periods": len(ics_arr),
+        "passes": mean_ic >= MIN_IC_THRESHOLD,
+    }
+
+
+def compute_signal_ic(
+    signal_fn: Callable[[pd.Timestamp], pd.Series],
+    prices: dict[str, pd.DataFrame],
+    benchmark_prices: pd.DataFrame,
+    validation_start: pd.Timestamp,
+    validation_end: pd.Timestamp,
+    cadence: str = "weekly",
+    forward_days: int = 21,
+) -> dict:
+    """Same methodology and return shape as `compute_mean_ic`, but for any
+    single cross-sectional signal directly (`signal_fn(as_of) ->
+    pd.Series`) instead of an `AlphaModel`'s predictions -- gates a raw
+    signal on its own IC before it's trusted with a composite weight, the
+    same way `ml_alpha` is gated, without needing to route it through a
+    trained model first. `signal_fn` should already be point-in-time safe
+    (only look at data `<= as_of`), same requirement as every other
+    signal's `compute()` in this codebase.
+    """
+    all_dates = pd.DatetimeIndex(sorted(set().union(*(df.index for df in prices.values()))))
+    dates = rebalance_dates(all_dates, cadence)
+    dates = dates[(dates >= validation_start) & (dates <= validation_end)]
+
+    ics: list[float] = []
+    for as_of in dates:
+        scores = signal_fn(as_of)
+        if scores.empty:
+            continue
+        fwd_returns = pd.Series(
+            {s: forward_excess_return(prices, benchmark_prices, s, as_of, forward_days) for s in scores.index}
+        ).dropna()
+        ics.append(compute_ic(scores, fwd_returns))
 
     ics_arr = np.array(ics, dtype=float)
     mean_ic = float(ics_arr.mean()) if len(ics_arr) else 0.0
