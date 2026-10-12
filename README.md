@@ -7,7 +7,83 @@ into a fully deterministic, rules-based decision engine — the AI researches
 and scores, it never decides. See `CLAUDE.md` for the full architecture
 writeup.
 
-Currently backtest-only: no live or paper order execution yet.
+Status: backtested over 2008–2024 and running weekly on an Alpaca **paper**
+account (no real money), with a dashboard at
+https://alpha-engine-dash.fly.dev. There is no live track record yet.
+
+## Results and findings
+
+Everything below is backtested on a hand-picked universe of today's
+large-caps, which flatters any strategy (see "Honest limitations"). Read
+the numbers as "how the variants compare", not "what you would have earned".
+
+### Headline numbers
+
+One continuous 2008–2024 backtest per strategy variant, full universe:
+
+| Strategy | CAGR | Sharpe | Max drawdown |
+|---|---|---|---|
+| Traditional (the default factor blend) | 16.6% | 1.07 | -22.8% |
+| Momentum only (12-1 momentum, 200-day trend filter) | 13.1% | 0.84 | -37.2% |
+| 60/40 blend of Systematic Core and Momentum | 11.2% | 0.85 | -23.2% |
+| Systematic Core (HMM regime classifier + LightGBM alpha model) | 9.7% | 0.81 | -22.6% |
+
+For scale, an earlier full-period run of the default config measured SPY at
+10.9% CAGR over the same span, with a drawdown past -50% in 2008–2009.
+
+Walk-forward check of the default strategy (parameters chosen on a 3-year
+train window from 72 candidate configs, scored on the following unseen
+year): 13 of 14 out-of-sample years were positive, mean 10.5% CAGR and
+0.91 Sharpe.
+
+| 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | 2017 | 2018 | 2019 | 2020 | 2021 | 2022 | 2023 | 2024 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| +5.8% | +7.3% | +23.3% | +9.2% | +12.1% | +25.2% | +22.1% | +2.4% | +18.0% | +9.2% | +15.8% | **-23.7%** | +6.9% | +12.8% |
+
+### What was learned
+
+- **The simple strategy won.** The plain weighted factor blend beat the
+  much more elaborate Systematic Core (regime classifier plus a
+  machine-learned alpha signal) on both return and Sharpe, across every
+  window configuration tested. More machinery did not buy more edge.
+- **Averaged drawdowns were hiding the real ones.** Walk-forward reports
+  were averaging each test window's own drawdown, which restarts from
+  zero every window. That made strategies look far safer than they were:
+  Traditional showed -10.0% on that basis and -22.8% in one continuous
+  run; Momentum showed -11.9% versus a real -37.2%. An earlier conclusion
+  that Systematic Core "has the best drawdowns" did not survive the
+  correction; it and Traditional are indistinguishable (-22.6% vs -22.8%).
+- **2022 is the weak spot.** The one losing out-of-sample year came from a
+  momentum-heavy config chosen with the trend filter off. The 200-day
+  trend filter is kept on by default for that reason, even though
+  optimising on train-period Sharpe alone rarely picks it.
+- **Momentum's worst loss was the 2008 crisis, with its safety filter
+  already on.** The trend filter had cut exposure to 60% throughout and
+  the portfolio still fell 37%. Tuning the filter would not have fixed
+  that; a concentrated portfolio in a market-wide crash just falls.
+- **Blending helps, but only a little.** Systematic Core and Momentum are
+  0.85 correlated month to month and share 5 of their 10 worst months.
+  The blend's drawdown (-23.2%) is still about 5 points better than a
+  weighted average of the two would predict.
+- **New signals have to prove themselves, and so far none has.** Each
+  candidate signal is now tested alone for whether it predicts next-period
+  returns (information coefficient, pass mark 0.03) on a held-out
+  2021–2022 window before it gets any weight:
+
+  | Signal | Information coefficient | Passes |
+  |---|---|---|
+  | Short-interest level (already in the blend) | 0.009 | No |
+  | Short-interest velocity (new) | 0.000 | No |
+  | Earnings press-release sentiment (new) | -0.026 | No |
+
+  The first row is a finding in itself: that signal had been carrying a
+  10% weight in Systematic Core without ever being checked on its own.
+- **Per-stock AI research was too expensive for what it added.** The first
+  version of the AI news signal made one Claude research call per ticker,
+  about $27 per rebalance (roughly $1,400 a year at weekly cadence), to
+  feed a signal with a 10% weight. It was replaced by a single
+  sector-level call per rebalance, about 60 times cheaper, which adjusts
+  one risk limit instead of ranking stocks.
 
 ## Setup
 
@@ -330,14 +406,14 @@ rigorous here:
   min-variance sizing, all called out explicitly.
 
 What this system is **not**: a proven source of market-beating returns.
-The full-universe backtest run so far tracks close to SPY, sometimes
-slightly ahead, sometimes slightly behind, depending on the exact period
-and parameters — see "Honest limitations" below. Rigor in the *process*
+The backtests above come out ahead of SPY, but on a universe picked with
+hindsight and with no live track record — see "Honest limitations" below. Rigor in the *process*
 is not the same thing as a validated edge in the *result*.
 
 ### Honest limitations
 
-- **No live track record.** Everything here is backtested. Backtests are
+- **No live track record.** Everything here is backtested; the paper-trading
+  account has not run long enough to say anything. Backtests are
   necessary but not sufficient — a strategy can look good in backtesting
   and still fail live, because of overfitting, regime change, or costs
   that are harder to model accurately in practice (real slippage, market
