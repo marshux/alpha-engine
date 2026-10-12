@@ -7,9 +7,9 @@ into a fully deterministic, rules-based decision engine — the AI researches
 and scores, it never decides. See `CLAUDE.md` for the full architecture
 writeup.
 
-Status: backtested over 2008–2024 and running weekly on an Alpaca **paper**
-account (no real money), with a dashboard at
-https://alpha-engine-dash.fly.dev. There is no live track record yet.
+Status: backtested over 2008–2024, with weekly rebalancing on an Alpaca
+**paper** account (no real money) and a web dashboard (`web/`, deployed to
+Fly.io). There is no live track record yet.
 
 ## Results and findings
 
