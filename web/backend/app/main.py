@@ -7,6 +7,7 @@ pip-installed (editable) into the same environment.
 from __future__ import annotations
 
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,7 +24,10 @@ from app.routes import public as public_routes
 from app.routes import runs as runs_routes
 from app.routes import strategies as strategies_routes
 
-SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "dev-only-insecure-key-override-in-production")
+# No hardcoded fallback: this repo is public, so a default key in source
+# would let anyone forge a logged-in session cookie on a deployment that
+# forgot to set the variable. Unset just means sessions reset on restart.
+SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY") or secrets.token_hex(32)
 # The Dockerfile builds web/frontend and copies its `dist/` output here.
 # Doesn't exist in local dev (frontend runs on its own via `npm run dev`,
 # proxying API calls to this server -- see web/frontend/vite.config.ts) --
@@ -73,8 +77,11 @@ if STATIC_DIR.exists():
     # matching file) still load the SPA instead of 404ing.
     @app.get("/{full_path:path}")
     def spa(full_path: str) -> FileResponse:
-        candidate = STATIC_DIR / full_path
-        if full_path and candidate.is_file():
+        # Resolve before serving: the path arrives percent-decoded, so
+        # "..%2f" segments would otherwise walk out of STATIC_DIR and
+        # serve any file the process can read (the SQLite DB, source).
+        candidate = (STATIC_DIR / full_path).resolve()
+        if full_path and candidate.is_relative_to(STATIC_DIR) and candidate.is_file():
             return FileResponse(candidate)
         index = STATIC_DIR / "index.html"
         if not index.exists():
